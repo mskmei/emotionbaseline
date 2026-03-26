@@ -120,18 +120,18 @@ def extract_audio_feature_from_mp4(mp4_path: Path, dim: int):
     try:
         import librosa
     except Exception:
-        return np.zeros(dim, dtype=np.float32)
+        return np.zeros(dim, dtype=np.float32), "librosa_missing"
 
     if not mp4_path.exists():
-        return np.zeros(dim, dtype=np.float32)
+        return np.zeros(dim, dtype=np.float32), "mp4_missing"
 
     try:
         y, _ = librosa.load(str(mp4_path), sr=16000, mono=True)
     except Exception:
-        return np.zeros(dim, dtype=np.float32)
+        return np.zeros(dim, dtype=np.float32), "decode_fail"
 
     if y.size == 0:
-        return np.zeros(dim, dtype=np.float32)
+        return np.zeros(dim, dtype=np.float32), "empty_audio"
 
     # Keep bounded runtime.
     y = y[: 16000 * 20]
@@ -145,7 +145,7 @@ def extract_audio_feature_from_mp4(mp4_path: Path, dim: int):
     n = np.linalg.norm(feat)
     if n > 0:
         feat = feat / n
-    return feat.astype(np.float32)
+    return feat.astype(np.float32), "ok"
 
 
 def main():
@@ -178,6 +178,13 @@ def main():
     testVid = []
 
     kept, dropped = 0, 0
+    audio_stats = {
+        "ok": 0,
+        "mp4_missing": 0,
+        "decode_fail": 0,
+        "empty_audio": 0,
+        "librosa_missing": 0,
+    }
     for stem in names:
         parsed = parse_sample_id(stem)
         if parsed is None:
@@ -210,7 +217,11 @@ def main():
         merged_text = ' '.join([t[1] for t in turns_ctx])
         text_seq = hash_text_vec(merged_text, d_text).reshape(1, -1)
         visual_seq = build_single_visual(frame_dir).reshape(1, -1)
-        audio_seq = extract_audio_feature_from_mp4(mp4_file, d_audio).reshape(1, -1)
+        audio_vec, audio_status = extract_audio_feature_from_mp4(mp4_file, d_audio)
+        if audio_status not in audio_stats:
+            audio_stats[audio_status] = 0
+        audio_stats[audio_status] += 1
+        audio_seq = audio_vec.reshape(1, -1)
 
         # Speakers for IEMOCAP loader: expects ['M','F',...]. Use deterministic per-dialog mapping.
         spk_raw = [t[0] for t in turns_ctx]
@@ -250,6 +261,10 @@ def main():
         pickle.dump(payload, f)
 
     print(f"[Build] dataset={args.dataset} total={len(names)} kept={kept} dropped={dropped}")
+    print(
+        "[Build] audio_status "
+        + " ".join([f"{k}={v}" for k, v in audio_stats.items()])
+    )
     print(f"[Build] out={out}")
 
 
