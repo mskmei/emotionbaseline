@@ -14,6 +14,7 @@ import pandas as pd
 import pickle as pk
 import datetime
 import ipdb
+from pathlib import Path
 
 # We use seed = 27350 for reproduction of the results reported in the paper.
 seed = 27350
@@ -248,6 +249,19 @@ def train_or_eval_graph_model(model, loss_function, dataloader, epoch, cuda, mod
     return avg_loss, avg_accuracy, labels, preds, avg_fscore, vids, ei, et, en, el
 
 
+def save_eval_report(labels, preds, save_dir, prefix):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+    report = classification_report(labels, preds, digits=4)
+    cm = confusion_matrix(labels, preds)
+    with open(save_dir / f"{prefix}_classification_report.txt", 'w', encoding='utf-8') as f:
+        f.write(report)
+    np.save(save_dir / f"{prefix}_confusion_matrix.npy", cm)
+    with open(save_dir / f"{prefix}_confusion_matrix.txt", 'w', encoding='utf-8') as f:
+        for row in cm:
+            f.write(' '.join(str(int(x)) for x in row) + '\n')
+
+
 if __name__ == '__main__':
     path = './saved/IEMOCAP/'
 
@@ -318,6 +332,8 @@ if __name__ == '__main__':
     parser.add_argument('--dial_test_path', type=str, default='', help='Optional external DIAL test pickle path in MMGCN feature format')
 
     parser.add_argument('--dial_eval_every', type=int, default=1, help='Evaluate external DIAL test every N epochs when --dial_test_path is set')
+
+    parser.add_argument('--dial_save_dir', type=str, default='./saved/dial_eval', help='Directory for saved DIAL reports')
 
     args = parser.parse_args()
     today = datetime.datetime.now()
@@ -517,6 +533,7 @@ if __name__ == '__main__':
                     model, loss_function, dial_loader, e, cuda, args.modals, dataset=args.Dataset
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
+                save_eval_report(dial_label, dial_pred, args.dial_save_dir, f'dial_epoch{e+1:03d}')
 
 
         else:
@@ -530,6 +547,8 @@ if __name__ == '__main__':
                     model, loss_function, dial_loader, e
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
+                valid_pos = np.where(np.array(dial_mask) > 0)[0]
+                save_eval_report(np.array(dial_label)[valid_pos], np.array(dial_pred)[valid_pos], args.dial_save_dir, f'dial_epoch{e+1:03d}')
 
         if best_loss == None or best_loss > test_loss:
             best_loss, best_label, best_pred = test_loss, test_label, test_pred
