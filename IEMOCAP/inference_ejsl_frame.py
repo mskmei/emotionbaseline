@@ -349,6 +349,25 @@ def save_reports(all_golds: List[int], all_preds: List[int], save_dir: Path, pre
     print(report)
 
 
+def load_state_dict_compat(path: Path, device: torch.device) -> Dict[str, torch.Tensor]:
+    # Prefer safer loading mode on newer torch; fall back for older versions.
+    try:
+        state = torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        state = torch.load(path, map_location=device)
+
+    # Some checkpoints may be wrapped in {'state_dict': ...}.
+    if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
+        state = state["state_dict"]
+
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Unsupported checkpoint format: {path}")
+
+    # Compatibility with older HF checkpoints.
+    state.pop("text_model.embeddings.position_ids", None)
+    return state
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate TelME pretrained on EJSL frame-selected samples")
     parser.add_argument("--frame_root", type=str, required=True)
@@ -431,20 +450,24 @@ def main():
     cls_num = len(IEMOCAP_LABELS)
 
     model_t = Teacher_model(text_model, cls_num)
-    model_t.load_state_dict(torch.load(Path(args.save_model_root) / "teacher.bin", map_location=device))
+    teacher_sd = load_state_dict_compat(Path(args.save_model_root) / "teacher.bin", device)
+    model_t.load_state_dict(teacher_sd, strict=False)
     model_t = model_t.to(device).eval()
 
     audio_s = Student_Audio(audio_model, cls_num, Config())
-    audio_s.load_state_dict(torch.load(Path(args.save_model_root) / "student_audio" / "total_student.bin", map_location=device))
+    audio_sd = load_state_dict_compat(Path(args.save_model_root) / "student_audio" / "total_student.bin", device)
+    audio_s.load_state_dict(audio_sd, strict=True)
     audio_s = audio_s.to(device).eval()
 
     video_s = Student_Video(video_model, cls_num)
-    video_s.load_state_dict(torch.load(Path(args.save_model_root) / "student_video" / "total_student.bin", map_location=device))
+    video_sd = load_state_dict_compat(Path(args.save_model_root) / "student_video" / "total_student.bin", device)
+    video_s.load_state_dict(video_sd, strict=True)
     video_s = video_s.to(device).eval()
 
     hidden_size, beta_shift, dropout_prob, num_head = 768, 2e-1, 0.2, 4
     fusion = ASF(cls_num, hidden_size, beta_shift, dropout_prob, num_head)
-    fusion.load_state_dict(torch.load(Path(args.save_model_root) / "total_fusion.bin", map_location=device))
+    fusion_sd = load_state_dict_compat(Path(args.save_model_root) / "total_fusion.bin", device)
+    fusion.load_state_dict(fusion_sd, strict=True)
     fusion = fusion.to(device).eval()
 
     with torch.no_grad():
