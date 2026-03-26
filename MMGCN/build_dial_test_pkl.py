@@ -115,11 +115,45 @@ def build_single_visual(frame_dir: Path):
     return seq[0]
 
 
+def extract_audio_feature_from_mp4(mp4_path: Path, dim: int):
+    """Directly extract a fixed-size audio feature from mp4 (no intermediate npy)."""
+    try:
+        import librosa
+    except Exception:
+        return np.zeros(dim, dtype=np.float32)
+
+    if not mp4_path.exists():
+        return np.zeros(dim, dtype=np.float32)
+
+    try:
+        y, _ = librosa.load(str(mp4_path), sr=16000, mono=True)
+    except Exception:
+        return np.zeros(dim, dtype=np.float32)
+
+    if y.size == 0:
+        return np.zeros(dim, dtype=np.float32)
+
+    # Keep bounded runtime.
+    y = y[: 16000 * 20]
+    spec = np.abs(np.fft.rfft(y, n=4096)).astype(np.float32)
+    feat = np.log1p(spec)
+    if feat.shape[0] >= dim:
+        feat = feat[:dim]
+    else:
+        feat = np.pad(feat, (0, dim - feat.shape[0]), mode="constant")
+
+    n = np.linalg.norm(feat)
+    if n > 0:
+        feat = feat / n
+    return feat.astype(np.float32)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build MMGCN external DIAL test pkl directly from txt+frame")
     parser.add_argument("--dial_list", type=str, required=True, help="CSV/TXT with DIAL sample names")
     parser.add_argument("--txt_root", type=str, required=True, help="Short_dialogue root")
     parser.add_argument("--frame_root", type=str, required=True, help="eJSL_dial/frame root")
+    parser.add_argument("--mp4_root", type=str, required=True, help="eJSL_dial/video root")
     parser.add_argument("--dataset", type=str, default="IEMOCAP", choices=["IEMOCAP", "MELD"])
     parser.add_argument("--out_pkl", type=str, required=True)
     args = parser.parse_args()
@@ -132,6 +166,7 @@ def main():
     names = read_names(Path(args.dial_list))
     txt_root = Path(args.txt_root)
     frame_root = Path(args.frame_root)
+    mp4_root = Path(args.mp4_root)
 
     videoIDs = {}
     videoSpeakers = {}
@@ -153,6 +188,7 @@ def main():
 
         txt_file = txt_root / sd_id / "txt" / f"{sd_id}-Dialogue-{dial_idx:02d}.txt"
         frame_dir = frame_root / stem
+        mp4_file = mp4_root / f"{stem}.mp4"
         if not txt_file.exists() or not frame_dir.exists():
             dropped += 1
             continue
@@ -174,7 +210,7 @@ def main():
         merged_text = ' '.join([t[1] for t in turns_ctx])
         text_seq = hash_text_vec(merged_text, d_text).reshape(1, -1)
         visual_seq = build_single_visual(frame_dir).reshape(1, -1)
-        audio_seq = np.zeros((1, d_audio), dtype=np.float32)
+        audio_seq = extract_audio_feature_from_mp4(mp4_file, d_audio).reshape(1, -1)
 
         # Speakers for IEMOCAP loader: expects ['M','F',...]. Use deterministic per-dialog mapping.
         spk_raw = [t[0] for t in turns_ctx]
