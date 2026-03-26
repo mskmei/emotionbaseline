@@ -304,10 +304,16 @@ def save_eval_report(labels, preds, save_dir, prefix):
         for row in cm:
             f.write(' '.join(str(int(x)) for x in row) + '\n')
 
+    f1w = f1_score(golds, predm, average='weighted') * 100.0
     print(f"[{prefix}] acc={acc:.4f}")
     print(f"[{prefix}] support(A,N,J,S)={support} total={sum(support)}")
     print(f"[{prefix}] gold_counts(A,N,J,S)={gold_counts}")
     print(f"[{prefix}] pred_counts(A,N,J,S)={pred_counts}")
+    return {
+        'acc': acc * 100.0,
+        'f1': f1w,
+        'support': support,
+    }
 
 
 if __name__ == '__main__':
@@ -564,7 +570,9 @@ if __name__ == '__main__':
         print('External DIAL test loaded from:', args.dial_test_path)
 
     best_fscore, best_loss, best_label, best_pred, best_mask = None, None, None, None, None
+    best_dial_fscore = None
     all_fscore, all_acc, all_loss = [], [], []
+    all_dial_fscore = []
 
     test_label = False
     if test_label:
@@ -586,7 +594,11 @@ if __name__ == '__main__':
                     model, loss_function, dial_loader, e, cuda, args.modals, dataset=args.Dataset
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
-                save_eval_report(dial_label, dial_pred, args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                dial_meta = save_eval_report(dial_label, dial_pred, args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                if dial_meta is not None:
+                    all_dial_fscore.append(dial_meta['f1'])
+                    if best_dial_fscore is None or dial_meta['f1'] > best_dial_fscore:
+                        best_dial_fscore = dial_meta['f1']
 
 
         else:
@@ -601,7 +613,11 @@ if __name__ == '__main__':
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
                 valid_pos = np.where(np.array(dial_mask) > 0)[0]
-                save_eval_report(np.array(dial_label)[valid_pos], np.array(dial_pred)[valid_pos], args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                dial_meta = save_eval_report(np.array(dial_label)[valid_pos], np.array(dial_pred)[valid_pos], args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                if dial_meta is not None:
+                    all_dial_fscore.append(dial_meta['f1'])
+                    if best_dial_fscore is None or dial_meta['f1'] > best_dial_fscore:
+                        best_dial_fscore = dial_meta['f1']
 
         if best_loss == None or best_loss > test_loss:
             best_loss, best_label, best_pred = test_loss, test_label, test_pred
@@ -618,7 +634,7 @@ if __name__ == '__main__':
 
         print('epoch: {}, train_loss: {}, train_acc: {}, train_fscore: {}, valid_loss: {}, valid_acc: {}, valid_fscore: {}, test_loss: {}, test_acc: {}, test_fscore: {}, time: {} sec'.\
                 format(e+1, train_loss, train_acc, train_fscore, valid_loss, valid_acc, valid_fscore, test_loss, test_acc, test_fscore, round(time.time()-start_time, 2)))
-        if (e+1)%10 == 0:
+        if (e+1)%10 == 0 and not args.dial_test_path:
             print(classification_report(best_label, best_pred, sample_weight=best_mask,digits=4))
             print(confusion_matrix(best_label,best_pred,sample_weight=best_mask))
         
@@ -626,6 +642,15 @@ if __name__ == '__main__':
 
     if args.tensorboard:
         writer.close()
+
+    if args.dial_test_path:
+        print('Dial performance..')
+        if all_dial_fscore:
+            print('Best DIAL Weighted-F1:', round(max(all_dial_fscore), 2))
+        else:
+            print('Best DIAL Weighted-F1: N/A')
+        print('DIAL reports saved to:', args.dial_save_dir)
+        exit(0)
 
     print('Test performance..')
     print ('F-Score:', max(all_fscore))
