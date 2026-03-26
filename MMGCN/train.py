@@ -91,8 +91,8 @@ def get_IEMOCAP_loaders(batch_size=32, valid=0.1, num_workers=0, pin_memory=Fals
     return train_loader, valid_loader, test_loader
 
 
-def get_external_test_loader(path, batch_size=32, num_workers=0, pin_memory=False):
-    testset = ExternalERCFeatureDataset(path)
+def get_external_test_loader(path, n_speakers=2, batch_size=32, num_workers=0, pin_memory=False):
+    testset = ExternalERCFeatureDataset(path, n_speakers=n_speakers)
     test_loader = DataLoader(
         testset,
         batch_size=batch_size,
@@ -555,7 +555,12 @@ if __name__ == '__main__':
 
     dial_loader = None
     if args.dial_test_path:
-        dial_loader = get_external_test_loader(args.dial_test_path, batch_size=batch_size, num_workers=0)
+        dial_loader = get_external_test_loader(
+            args.dial_test_path,
+            n_speakers=n_speakers,
+            batch_size=batch_size,
+            num_workers=0,
+        )
         print('External DIAL test loaded from:', args.dial_test_path)
 
     best_fscore, best_loss, best_label, best_pred, best_mask = None, None, None, None, None

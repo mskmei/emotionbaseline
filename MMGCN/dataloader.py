@@ -156,8 +156,9 @@ class ExternalERCFeatureDataset(Dataset):
        }
     """
 
-    def __init__(self, path):
+    def __init__(self, path, n_speakers=2):
         obj = pickle.load(open(path, 'rb'), encoding='latin1')
+        self.n_speakers = int(n_speakers)
 
         if isinstance(obj, tuple) or isinstance(obj, list):
             self.videoIDs = obj[0]
@@ -185,7 +186,13 @@ class ExternalERCFeatureDataset(Dataset):
         # Case 1: already one-hot vectors (MELD-like).
         arr = np.array(speakers)
         if arr.ndim == 2 and np.issubdtype(arr.dtype, np.number):
-            return torch.FloatTensor(arr)
+            if arr.shape[1] == self.n_speakers:
+                return torch.FloatTensor(arr.astype(np.float32))
+            if arr.shape[1] > self.n_speakers:
+                return torch.FloatTensor(arr[:, :self.n_speakers].astype(np.float32))
+            # Pad missing speaker dims with zeros.
+            pad = np.zeros((arr.shape[0], self.n_speakers - arr.shape[1]), dtype=np.float32)
+            return torch.FloatTensor(np.concatenate([arr.astype(np.float32), pad], axis=1))
 
         # Case 2: speaker ids / names -> dynamic one-hot within each conversation.
         uniq = []
@@ -195,8 +202,9 @@ class ExternalERCFeatureDataset(Dataset):
         spk2id = {s: i for i, s in enumerate(uniq)}
         onehots = []
         for s in speakers:
-            v = [0.0] * len(uniq)
-            v[spk2id[s]] = 1.0
+            v = [0.0] * self.n_speakers
+            idx = spk2id[s] % self.n_speakers
+            v[idx] = 1.0
             onehots.append(v)
         return torch.FloatTensor(onehots)
 
