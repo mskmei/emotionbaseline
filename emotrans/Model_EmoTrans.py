@@ -141,7 +141,9 @@ class ERCDataset_EmoTrans(ERCDataset_Multi):
 
 def config_for_model(args, scale='base'):
     scale = args.model['scale'] if 'scale' in args.model else scale
-    args.model['plm'] = args.file['plm_dir'] + f"roberta-{scale}"
+    local_plm = os.path.join(args.file['plm_dir'], f"roberta-{scale}")
+    # If local pretrained directory is missing, fallback to HF hub model id.
+    args.model['plm'] = local_plm if os.path.isdir(local_plm) else f"roberta-{scale}"
     
     args.model['data'] = f"{args.file['cache_dir']}{args.model['name']}.{scale}"
 
