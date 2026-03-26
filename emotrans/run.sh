@@ -1,8 +1,8 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-# Use this script from any cwd; it resolves to the emotrans folder itself.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Use this script from any cwd; resolve script directory in POSIX sh.
+SCRIPT_DIR=`cd "`dirname "$0"`" && pwd`
 cd "${SCRIPT_DIR}"
 
 # Configurable paths (can be overridden by env vars).
@@ -16,17 +16,21 @@ cd "${SCRIPT_DIR}"
 echo "[Run] emotrans dir: ${SCRIPT_DIR}"
 echo "[Run] preparing dataset: ${NEW_DATASET}"
 
-PREP_ARGS=(
-  --base_dataset "${BASE_DATASET}"
-  --new_dataset "${NEW_DATASET}"
-  --dial_test_csv "${DIAL_TEST_CSV}"
-  --txt_root "${TXT_ROOT}"
-)
-if [[ "${TRANSLATE_TO_EN}" == "1" ]]; then
-  PREP_ARGS+=(--translate_to_en --translation_model "${TRANSLATION_MODEL}")
+if [ "${TRANSLATE_TO_EN}" = "1" ]; then
+  python prepare_emotrans_dial_test.py \
+    --base_dataset "${BASE_DATASET}" \
+    --new_dataset "${NEW_DATASET}" \
+    --dial_test_csv "${DIAL_TEST_CSV}" \
+    --txt_root "${TXT_ROOT}" \
+    --translate_to_en \
+    --translation_model "${TRANSLATION_MODEL}"
+else
+  python prepare_emotrans_dial_test.py \
+    --base_dataset "${BASE_DATASET}" \
+    --new_dataset "${NEW_DATASET}" \
+    --dial_test_csv "${DIAL_TEST_CSV}" \
+    --txt_root "${TXT_ROOT}"
 fi
-
-python prepare_emotrans_dial_test.py "${PREP_ARGS[@]}"
 
 echo "[Run] training + per-epoch dial test"
 python run_emotrans_dial_test.py
@@ -34,7 +38,7 @@ python run_emotrans_dial_test.py
 REPORT_DIR="${SCRIPT_DIR}/saved/meld_dial_metrics"
 echo "[Run] checking reports in: ${REPORT_DIR}"
 
-if [[ ! -d "${REPORT_DIR}" ]]; then
+if [ ! -d "${REPORT_DIR}" ]; then
   echo "[Error] report dir not found: ${REPORT_DIR}" >&2
   exit 1
 fi
@@ -42,7 +46,7 @@ fi
 report_count=$(find "${REPORT_DIR}" -maxdepth 1 -type f -name 'test_epoch*_classification_report.txt' | wc -l)
 cm_count=$(find "${REPORT_DIR}" -maxdepth 1 -type f -name 'test_epoch*_confusion_matrix.txt' | wc -l)
 
-if [[ "${report_count}" -eq 0 || "${cm_count}" -eq 0 ]]; then
+if [ "${report_count}" -eq 0 ] || [ "${cm_count}" -eq 0 ]; then
   echo "[Error] dial test outputs missing. report_count=${report_count}, cm_count=${cm_count}" >&2
   echo "[Error] inspect process logs for '[test] skip report:' reasons" >&2
   exit 1
