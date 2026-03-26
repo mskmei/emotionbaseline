@@ -45,6 +45,39 @@ def read_dial_names(path: Path) -> List[str]:
     return [Path(x).stem for x in lines]
 
 
+def scan_dial_names_from_frame_root(frame_root: Path) -> List[str]:
+    if not frame_root.exists():
+        return []
+    names = []
+    for p in sorted(frame_root.iterdir()):
+        # Typical layout: frame/SD01-01-01A/*.jpg
+        if p.is_dir() and parse_dial_sample_id(p.name) is not None:
+            names.append(p.name)
+            continue
+        # Fallback for possible file-style entries.
+        stem = p.stem
+        if parse_dial_sample_id(stem) is not None:
+            names.append(stem)
+    return names
+
+
+def collect_dial_names(dial_list: Optional[Path], frame_root: Optional[Path]) -> List[str]:
+    if dial_list is not None and dial_list.exists():
+        names = read_dial_names(dial_list)
+        print(f"[Prepare] using dial list: {dial_list}  n={len(names)}")
+        return names
+
+    if dial_list is not None:
+        print(f"[Warn] dial list not found: {dial_list}")
+
+    if frame_root is not None:
+        names = scan_dial_names_from_frame_root(frame_root)
+        print(f"[Prepare] using frame scan: {frame_root}  n={len(names)}")
+        return names
+
+    return []
+
+
 def parse_dialogue_txt(txt_file: Path):
     turns = []
     for raw in txt_file.read_text(encoding="utf-8").splitlines():
@@ -102,8 +135,8 @@ class JaEnTranslator:
         return text
 
 
-def build_dial_test_json(dial_list: Path, txt_root: Path, translator: Optional[JaEnTranslator] = None):
-    names = read_dial_names(dial_list)
+def build_dial_test_json(dial_names: List[str], txt_root: Path, translator: Optional[JaEnTranslator] = None):
+    names = dial_names
     convs = []
     for name in names:
         parsed = parse_dial_sample_id(name)
@@ -135,7 +168,8 @@ def main():
     p = argparse.ArgumentParser(description="Prepare EmoTrans dataset alias: keep base train/valid, replace test with DIAL")
     p.add_argument("--base_dataset", type=str, default="meld", help="Existing dataset under ./datasets, e.g. meld")
     p.add_argument("--new_dataset", type=str, default="meld_dial", help="New dataset folder name under ./datasets")
-    p.add_argument("--dial_test_csv", type=str, required=True)
+    p.add_argument("--dial_test_csv", type=str, default="", help="CSV/TXT list of clip names; optional when --frame_root is provided")
+    p.add_argument("--frame_root", type=str, default="", help="Frame root like .../eJSL_dial/frame; used when dial list is missing")
     p.add_argument("--txt_root", type=str, required=True)
     p.add_argument("--datasets_root", type=str, default="./datasets")
     p.add_argument("--translate_to_en", action="store_true", help="Translate Japanese utterances to English before writing test.json")
@@ -164,7 +198,15 @@ def main():
         if translator._pipe is None:
             print("[Warn] translation requested but model is unavailable, fallback to original Japanese text")
 
-    test_convs = build_dial_test_json(Path(args.dial_test_csv), Path(args.txt_root), translator=translator)
+    dial_list = Path(args.dial_test_csv) if args.dial_test_csv else None
+    frame_root = Path(args.frame_root) if args.frame_root else None
+    dial_names = collect_dial_names(dial_list, frame_root)
+    if not dial_names:
+        raise RuntimeError(
+            "No DIAL samples found. Provide --dial_test_csv (existing file) or --frame_root (existing dir)."
+        )
+
+    test_convs = build_dial_test_json(dial_names, Path(args.txt_root), translator=translator)
     with open(new_dir / "test.json", "w", encoding="utf-8") as f:
         json.dump(test_convs, f, ensure_ascii=False, indent=2)
 
