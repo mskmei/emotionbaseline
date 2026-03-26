@@ -2,6 +2,7 @@ import torch, os, json
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
+from datetime import datetime
 from tqdm import tqdm
 from torch.nn import CrossEntropyLoss
 from torch.nn.utils.rnn import pad_sequence
@@ -149,6 +150,45 @@ def config_for_model(args, scale='base'):
 
 
     return args
+
+
+def _load_cached_dataset(data_path: str):
+    if not os.path.exists(data_path):
+        return None
+
+    # PyTorch 2.6 switched torch.load default to weights_only=True.
+    # Our cache stores a full ERCDataset object, so we need object-mode load.
+    try:
+        return torch.load(data_path, weights_only=False)
+    except TypeError:
+        # Older torch versions may not support weights_only.
+        return torch.load(data_path)
+    except Exception as exc:
+        backup = f"{data_path}.broken.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        try:
+            os.replace(data_path, backup)
+            print(f"[Warn] bad dataset cache moved to: {backup}")
+        except Exception:
+            pass
+        print(f"[Warn] failed to load dataset cache ({data_path}): {exc}")
+        return None
+
+
+def _cache_is_fresh(data_path: str, data_dir: str) -> bool:
+    if not os.path.exists(data_path):
+        return False
+
+    cache_mtime = os.path.getmtime(data_path)
+    data_files = [
+        os.path.join(data_dir, "train.json"),
+        os.path.join(data_dir, "valid.json"),
+        os.path.join(data_dir, "test.json"),
+        os.path.join(data_dir, "label_change"),
+    ]
+    for p in data_files:
+        if os.path.exists(p) and os.path.getmtime(p) > cache_mtime:
+            return False
+    return True
              
 def import_model(args):
     ## 1. 更新参数
@@ -156,10 +196,16 @@ def import_model(args):
     
     ## 2. 导入数据
     data_path = args.model['data']
-    if os.path.exists(data_path):
-        dataset = torch.load(data_path)
+    data_dir = f"{args.file['data_dir']}{args.train['tasks'][-1]}/"
+
+    dataset = None
+    if _cache_is_fresh(data_path, data_dir):
+        dataset = _load_cached_dataset(data_path)
     else:
-        data_dir = f"{args.file['data_dir']}{args.train['tasks'][-1]}/"
+        if os.path.exists(data_path):
+            print(f"[Info] dataset cache is stale, rebuilding: {data_path}")
+
+    if dataset is None:
         dataset = ERCDataset_EmoTrans(data_dir, args.train['batch_size'])
         tokenizer = AutoTokenizer.from_pretrained(args.model['plm'])
         max_seq_len = max_seq_lens.get(args.train['tasks'][-1], 128)

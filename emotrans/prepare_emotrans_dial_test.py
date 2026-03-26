@@ -4,7 +4,7 @@ import json
 import shutil
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def parse_dial_sample_id(name: str) -> Optional[Tuple[str, int, int, str]]:
@@ -59,7 +59,50 @@ def parse_dialogue_txt(txt_file: Path):
     return turns
 
 
-def build_dial_test_json(dial_list: Path, txt_root: Path):
+class JaEnTranslator:
+    def __init__(self, model_name: str, batch_size: int = 32):
+        self.model_name = model_name
+        self.batch_size = batch_size
+        self._cache: Dict[str, str] = {}
+        self.failed = 0
+
+        try:
+            from transformers import pipeline
+            import torch
+
+            # Use GPU when available; otherwise run on CPU.
+            device = 0 if torch.cuda.is_available() else -1
+            self._pipe = pipeline(
+                "translation",
+                model=model_name,
+                tokenizer=model_name,
+                device=device,
+            )
+        except Exception as exc:
+            self._pipe = None
+            print(f"[Warn] translation disabled: cannot init model '{model_name}': {exc}")
+
+    def translate(self, text: str) -> str:
+        if not text:
+            return text
+        if text in self._cache:
+            return self._cache[text]
+        if self._pipe is None:
+            return text
+
+        try:
+            out = self._pipe(text, max_length=256)
+            if out and isinstance(out, list):
+                translated = str(out[0].get("translation_text", "")).strip()
+                if translated:
+                    self._cache[text] = translated
+                    return translated
+        except Exception:
+            self.failed += 1
+        return text
+
+
+def build_dial_test_json(dial_list: Path, txt_root: Path, translator: Optional[JaEnTranslator] = None):
     names = read_dial_names(dial_list)
     convs = []
     for name in names:
@@ -78,6 +121,8 @@ def build_dial_test_json(dial_list: Path, txt_root: Path):
         conv = []
         for i in range(utterance_idx):
             speaker, text = turns[i]
+            if translator is not None:
+                text = translator.translate(text)
             # Keep earlier turns as neutral to avoid injecting unknown labels.
             emo = dial_to_meld_label(label) if i == utterance_idx - 1 else "neutral"
             conv.append({"text": text, "speaker": speaker, "emotion": emo})
@@ -93,6 +138,8 @@ def main():
     p.add_argument("--dial_test_csv", type=str, required=True)
     p.add_argument("--txt_root", type=str, required=True)
     p.add_argument("--datasets_root", type=str, default="./datasets")
+    p.add_argument("--translate_to_en", action="store_true", help="Translate Japanese utterances to English before writing test.json")
+    p.add_argument("--translation_model", type=str, default="Helsinki-NLP/opus-mt-ja-en")
     args = p.parse_args()
 
     datasets_root = Path(args.datasets_root)
@@ -111,7 +158,13 @@ def main():
     # label_change should be inherited from base dataset for model prompt tokens.
     shutil.copy2(base_dir / "label_change", new_dir / "label_change")
 
-    test_convs = build_dial_test_json(Path(args.dial_test_csv), Path(args.txt_root))
+    translator = None
+    if args.translate_to_en:
+        translator = JaEnTranslator(args.translation_model)
+        if translator._pipe is None:
+            print("[Warn] translation requested but model is unavailable, fallback to original Japanese text")
+
+    test_convs = build_dial_test_json(Path(args.dial_test_csv), Path(args.txt_root), translator=translator)
     with open(new_dir / "test.json", "w", encoding="utf-8") as f:
         json.dump(test_convs, f, ensure_ascii=False, indent=2)
 
@@ -120,6 +173,9 @@ def main():
     print(f"[Prepare] train copied: {new_dir / 'train.json'}")
     print(f"[Prepare] valid copied: {new_dir / 'valid.json'}")
     print(f"[Prepare] test(dial): {new_dir / 'test.json'}  n={len(test_convs)}")
+    if translator is not None:
+        print(f"[Prepare] translation_model={args.translation_model}")
+        print(f"[Prepare] translation_cache={len(translator._cache)} failed={translator.failed}")
 
 
 if __name__ == "__main__":

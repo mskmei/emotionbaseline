@@ -1,10 +1,15 @@
+pip install sentencepiece sacremoses
+
 cd /raid_zoe/home/lr/maokeyu/sign/emotionbaseline/emotrans
+
+# 1) 生成 dial test（启用日->英）
 python prepare_emotrans_dial_test.py \
   --base_dataset meld \
   --new_dataset meld_dial \
-  --dial_test_csv /home/lr/wangyi/Sign/RO-MAN/eJSL_dial_dataset/ejsldial_filenames.csv \
-  --txt_root /raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue
+  --dial_test_csv /raid_zoe/home/lr/wangyi/sign/eJSL_dial/frame/_list.csv \
+  --txt_root /raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue \
+  --translate_to_en \
+  --translation_model Helsinki-NLP/opus-mt-ja-en
 
-  rm -f ./Cache/meld_dial/emotrans.large
-
-  CUDA_VISIBLE_DEVICES=1 python run_emotrans_dial_test.py
+# 2) 跑训练+每epoch dial测试
+python run_emotrans_dial_test.py
