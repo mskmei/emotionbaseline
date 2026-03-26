@@ -162,11 +162,13 @@ class Processor():
                     if stage == 'test': self.model.test_step(batch, bi)
             
         if stage == 'valid':
+            stage_outputs = list(self.model.validation_step_outputs)
+            self._save_stage_report(stage, stage_outputs)
             self.model.on_validation_end()
-            self._save_stage_report(stage, self.model.validation_step_outputs)
         if stage == 'test':
+            stage_outputs = list(self.model.test_step_outputs)
+            self._save_stage_report(stage, stage_outputs)
             self.model.on_test_end()
-            self._save_stage_report(stage, self.model.test_step_outputs)
         return self.dataset.metrics.results
 
     def _save_stage_report(self, stage, outputs):
