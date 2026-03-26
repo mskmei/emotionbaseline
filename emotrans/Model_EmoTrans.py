@@ -282,7 +282,8 @@ class EmoSKD(ModelForClassification):
                 if state_sel and si not in state_sel: continue
                 logits = self.plm_model.lm_head(state[flow_mask])
                 mlm_loss.append(self.loss_ce(logits, inputs['emo_flow_token_label'][label_mask]))
-        else: mlm_loss = 0
+        else:
+            mlm_loss = []
 
         
         if self.args.model['use_rnn']:
@@ -298,9 +299,14 @@ class EmoSKD(ModelForClassification):
         else:
             features = plm_outs.pooler_output
 
-        rate = list(range(len(mlm_loss)+1))[1:]
-        rate = [v/sum(rate) for v in rate]
-        return features, sum([s*r for s,r in zip(mlm_loss, rate)])
+        if len(mlm_loss) == 0:
+            loss_mlm = torch.tensor(0.0, device=features.device)
+        else:
+            rate = list(range(1, len(mlm_loss) + 1))
+            denom = float(sum(rate))
+            rate = [v / denom for v in rate]
+            loss_mlm = sum([s * r for s, r in zip(mlm_loss, rate)])
+        return features, loss_mlm
         
     def forward(self, inputs, stage='train'):
         ## 1. encoding 
