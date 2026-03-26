@@ -250,16 +250,65 @@ def train_or_eval_graph_model(model, loss_function, dataloader, epoch, cuda, mod
 
 
 def save_eval_report(labels, preds, save_dir, prefix):
+    label_order = ['A', 'N', 'J', 'S']
+
+    def to_anjs(dataset_name, y):
+        if dataset_name == 'IEMOCAP':
+            # 0 ang, 1 exc, 2 fru, 3 hap, 4 neu, 5 sad
+            m = {0: 'A', 1: 'J', 2: 'A', 3: 'J', 4: 'N', 5: 'S'}
+            return m.get(int(y), None)
+        # MELD: 0 neutral, 1 surprise, 2 fear, 3 sadness, 4 joy, 5 disgust, 6 anger
+        m = {0: 'N', 3: 'S', 4: 'J', 6: 'A'}
+        return m.get(int(y), None)
+
+    mapped = []
+    for g, p in zip(labels, preds):
+        g2 = to_anjs(args.Dataset, g)
+        p2 = to_anjs(args.Dataset, p)
+        if g2 is None or p2 is None:
+            continue
+        mapped.append((g2, p2))
+
+    if not mapped:
+        print(f"[{prefix}] no valid A/N/J/S pairs after mapping; skip report save")
+        return
+
+    lab_to_id = {k: i for i, k in enumerate(label_order)}
+    golds = np.array([lab_to_id[g] for g, _ in mapped], dtype=np.int64)
+    predm = np.array([lab_to_id[p] for _, p in mapped], dtype=np.int64)
+
+    cm = confusion_matrix(golds, predm, labels=list(range(len(label_order))))
+    report = classification_report(
+        golds,
+        predm,
+        labels=list(range(len(label_order))),
+        target_names=label_order,
+        digits=4,
+        zero_division=0,
+    )
+    support = cm.sum(axis=1).tolist()
+    gold_counts = np.bincount(golds, minlength=len(label_order)).tolist()
+    pred_counts = np.bincount(predm, minlength=len(label_order)).tolist()
+    acc = float((golds == predm).mean())
+
     save_dir = Path(save_dir)
     save_dir.mkdir(parents=True, exist_ok=True)
-    report = classification_report(labels, preds, digits=4)
-    cm = confusion_matrix(labels, preds)
     with open(save_dir / f"{prefix}_classification_report.txt", 'w', encoding='utf-8') as f:
+        f.write(f"accuracy={acc:.6f}\n")
+        f.write(f"support(A,N,J,S)={support} total={sum(support)}\n")
+        f.write(f"gold_counts(A,N,J,S)={gold_counts}\n")
+        f.write(f"pred_counts(A,N,J,S)={pred_counts}\n\n")
         f.write(report)
     np.save(save_dir / f"{prefix}_confusion_matrix.npy", cm)
     with open(save_dir / f"{prefix}_confusion_matrix.txt", 'w', encoding='utf-8') as f:
+        f.write('labels: ' + ','.join(label_order) + '\n')
         for row in cm:
             f.write(' '.join(str(int(x)) for x in row) + '\n')
+
+    print(f"[{prefix}] acc={acc:.4f}")
+    print(f"[{prefix}] support(A,N,J,S)={support} total={sum(support)}")
+    print(f"[{prefix}] gold_counts(A,N,J,S)={gold_counts}")
+    print(f"[{prefix}] pred_counts(A,N,J,S)={pred_counts}")
 
 
 if __name__ == '__main__':

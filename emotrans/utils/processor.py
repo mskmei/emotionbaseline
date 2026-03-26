@@ -1,4 +1,7 @@
 import torch, time, math
+import numpy as np
+from pathlib import Path
+from sklearn import metrics
 from tqdm import tqdm
 
 
@@ -158,6 +161,97 @@ class Processor():
                     if stage == 'valid': self.model.validation_step(batch, bi)
                     if stage == 'test': self.model.test_step(batch, bi)
             
-        if stage == 'valid': self.model.on_validation_end()
-        if stage == 'test': self.model.on_test_end()
+        if stage == 'valid':
+            self.model.on_validation_end()
+            self._save_stage_report(stage, self.model.validation_step_outputs)
+        if stage == 'test':
+            self.model.on_test_end()
+            self._save_stage_report(stage, self.model.test_step_outputs)
         return self.dataset.metrics.results
+
+    def _save_stage_report(self, stage, outputs):
+        if not self.args.train.get('save_cls_report', False):
+            return
+        if outputs is None or len(outputs) == 0:
+            return
+
+        # Only for ERC-like classification outputs with preds/labels.
+        if not isinstance(outputs[0], dict) or ('preds' not in outputs[0]) or ('labels' not in outputs[0]):
+            return
+
+        preds = np.concatenate([rec['preds'].detach().cpu().numpy() for rec in outputs])
+        labels = np.concatenate([rec['labels'].detach().cpu().numpy() for rec in outputs])
+        if len(labels) == 0:
+            return
+
+        label_map = self.dataset.tokenizer_['labels']['itol']
+        report_style = self.args.train.get('report_style', '')
+
+        if report_style == 'anjs':
+            target_names = ['A', 'N', 'J', 'S']
+            map_cfg = self.args.train.get('report_label_map', {})
+            # Convert idx -> label name -> A/N/J/S
+            mapped = []
+            for g, p in zip(labels.tolist(), preds.tolist()):
+                g_name = str(label_map[int(g)])
+                p_name = str(label_map[int(p)])
+                g2 = map_cfg.get(g_name)
+                p2 = map_cfg.get(p_name)
+                if g2 is None or p2 is None:
+                    continue
+                mapped.append((g2, p2))
+
+            if not mapped:
+                return
+
+            anjs_to_idx = {k: i for i, k in enumerate(target_names)}
+            labels_eval = np.array([anjs_to_idx[g] for g, _ in mapped], dtype=np.int64)
+            preds_eval = np.array([anjs_to_idx[p] for _, p in mapped], dtype=np.int64)
+            labels_idx = list(range(len(target_names)))
+        else:
+            labels_idx = sorted([int(k) for k in label_map.keys()])
+            target_names = [str(label_map[i]) for i in labels_idx]
+            labels_eval = labels.astype(np.int64)
+            preds_eval = preds.astype(np.int64)
+
+        report = metrics.classification_report(
+            labels_eval,
+            preds_eval,
+            labels=labels_idx,
+            target_names=target_names,
+            digits=4,
+            zero_division=0,
+        )
+        cm = metrics.confusion_matrix(labels_eval, preds_eval, labels=labels_idx)
+        support = cm.sum(axis=1).tolist()
+        gold_counts = np.bincount(labels_eval, minlength=len(labels_idx)).tolist()
+        pred_counts = np.bincount(preds_eval, minlength=len(labels_idx)).tolist()
+        acc = float((labels_eval == preds_eval).mean())
+
+        save_dir = Path(self.args.train.get('report_dir', self.args.file['save_dir']))
+        save_dir.mkdir(parents=True, exist_ok=True)
+        ep = int(self.model.cur_epoch) + 1
+        prefix = f"{stage}_epoch{ep:03d}"
+
+        np.save(save_dir / f"{prefix}_confusion_matrix.npy", cm)
+        with open(save_dir / f"{prefix}_confusion_matrix.txt", 'w', encoding='utf-8') as f:
+            f.write('labels: ' + ','.join(target_names) + '\n')
+            for row in cm:
+                f.write(' '.join(str(int(x)) for x in row) + '\n')
+        with open(save_dir / f"{prefix}_classification_report.txt", 'w', encoding='utf-8') as f:
+            f.write(f"epoch={ep}\n")
+            f.write(f"stage={stage}\n")
+            f.write(f"accuracy={acc:.6f}\n")
+            if report_style == 'anjs':
+                f.write(f"support(A,N,J,S)={support} total={sum(support)}\n")
+                f.write(f"gold_counts(A,N,J,S)={gold_counts}\n")
+                f.write(f"pred_counts(A,N,J,S)={pred_counts}\n\n")
+            else:
+                f.write(f"support={support}\n")
+                f.write(f"gold_counts={gold_counts}\n")
+                f.write(f"pred_counts={pred_counts}\n\n")
+            f.write(report)
+
+        self.args.logger['process'].warning(
+            f"[{stage}] report saved: {save_dir / (prefix + '_classification_report.txt')}"
+        )

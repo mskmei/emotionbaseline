@@ -29,6 +29,19 @@ def main():
     args.train["do_test"] = True
     args.train["test_every_epoch"] = True
     args.train["log_step_rate"] = 1.0
+    args.train["save_cls_report"] = True
+    args.train["report_dir"] = "./saved/meld_dial_metrics"
+    args.train["report_style"] = "anjs"
+    args.train["report_label_map"] = {
+        "anger": "A",
+        "joy": "J",
+        "neutral": "N",
+        "sadness": "S",
+        # Optional collapse for extra MELD labels if predicted.
+        "surprise": "J",
+        "fear": "S",
+        "disgust": "A",
+    }
 
     args.logger["display"].extend(["arch", "scale", "weight", "flow_num"])
 
@@ -42,6 +55,7 @@ def main():
 
     print("[Done] valid:", result["valid"])
     print("[Done] test (dial):", result["test"])
+    print("[Done] reports at:", args.train["report_dir"])
 
 
 if __name__ == "__main__":
