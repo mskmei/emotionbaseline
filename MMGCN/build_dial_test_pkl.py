@@ -148,6 +148,50 @@ def extract_audio_feature_from_mp4(mp4_path: Path, dim: int):
     return feat.astype(np.float32), "ok"
 
 
+def _flatten_feature_dict(feat_dict):
+    rows = []
+    for _k, v in feat_dict.items():
+        arr = np.asarray(v, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr.reshape(1, -1)
+        if arr.ndim == 2 and arr.shape[0] > 0:
+            rows.append(arr)
+    if not rows:
+        return None
+    return np.concatenate(rows, axis=0)
+
+
+def load_source_stats(source_pkl: Path):
+    obj = pickle.load(open(source_pkl, 'rb'), encoding='latin1')
+    if not (isinstance(obj, tuple) or isinstance(obj, list)):
+        raise RuntimeError(f"Unsupported source pkl format: {source_pkl}")
+
+    text_dict = obj[3]
+    audio_dict = obj[4]
+    visual_dict = obj[5]
+
+    t_all = _flatten_feature_dict(text_dict)
+    a_all = _flatten_feature_dict(audio_dict)
+    v_all = _flatten_feature_dict(visual_dict)
+    if t_all is None or a_all is None or v_all is None:
+        raise RuntimeError(f"Failed to build source stats from: {source_pkl}")
+
+    eps = 1e-6
+    return {
+        'text_mean': t_all.mean(axis=0),
+        'text_std': np.maximum(t_all.std(axis=0), eps),
+        'audio_mean': a_all.mean(axis=0),
+        'audio_std': np.maximum(a_all.std(axis=0), eps),
+        'visual_mean': v_all.mean(axis=0),
+        'visual_std': np.maximum(v_all.std(axis=0), eps),
+    }
+
+
+def match_stats(x, x_mean, x_std, src_mean, src_std):
+    z = (x - x_mean) / np.maximum(x_std, 1e-6)
+    return z * src_std + src_mean
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build MMGCN external DIAL test pkl directly from txt+frame")
     parser.add_argument("--dial_list", type=str, required=True, help="CSV/TXT with DIAL sample names")
@@ -155,6 +199,8 @@ def main():
     parser.add_argument("--frame_root", type=str, required=True, help="eJSL_dial/frame root")
     parser.add_argument("--mp4_root", type=str, required=True, help="eJSL_dial/video root")
     parser.add_argument("--dataset", type=str, default="IEMOCAP", choices=["IEMOCAP", "MELD"])
+    parser.add_argument("--source_pkl", type=str, default="", help="Source feature pkl for mean/std alignment")
+    parser.add_argument("--disable_source_align", action="store_true", help="Disable source-domain stats alignment")
     parser.add_argument("--out_pkl", type=str, required=True)
     args = parser.parse_args()
 
@@ -167,6 +213,14 @@ def main():
     txt_root = Path(args.txt_root)
     frame_root = Path(args.frame_root)
     mp4_root = Path(args.mp4_root)
+
+    if args.source_pkl:
+        source_pkl = Path(args.source_pkl)
+    else:
+        source_pkl = Path('./IEMOCAP_features/IEMOCAP_features.pkl') if args.dataset.upper() == 'IEMOCAP' else Path('./MELD_features/MELD_features_raw1.pkl')
+    source_stats = None
+    if not args.disable_source_align:
+        source_stats = load_source_stats(source_pkl)
 
     videoIDs = {}
     videoSpeakers = {}
@@ -185,6 +239,7 @@ def main():
         "empty_audio": 0,
         "librosa_missing": 0,
     }
+    raw_text_bank, raw_audio_bank, raw_visual_bank = [], [], []
     for stem in names:
         parsed = parse_sample_id(stem)
         if parsed is None:
@@ -242,6 +297,32 @@ def main():
         testVid.append(stem)
         kept += 1
 
+        raw_text_bank.append(text_seq[0])
+        raw_audio_bank.append(audio_seq[0])
+        raw_visual_bank.append(visual_seq[0])
+
+    # Optional source-domain mean/std alignment.
+    if source_stats is not None and kept > 0:
+        t_bank = np.stack(raw_text_bank, axis=0)
+        a_bank = np.stack(raw_audio_bank, axis=0)
+        v_bank = np.stack(raw_visual_bank, axis=0)
+        t_mean, t_std = t_bank.mean(axis=0), np.maximum(t_bank.std(axis=0), 1e-6)
+        a_mean, a_std = a_bank.mean(axis=0), np.maximum(a_bank.std(axis=0), 1e-6)
+        v_mean, v_std = v_bank.mean(axis=0), np.maximum(v_bank.std(axis=0), 1e-6)
+
+        for stem in testVid:
+            tx = videoText[stem][0]
+            ax = videoAudio[stem][0]
+            vx = videoVisual[stem][0]
+
+            tx2 = match_stats(tx, t_mean, t_std, source_stats['text_mean'], source_stats['text_std']).astype(np.float32)
+            ax2 = match_stats(ax, a_mean, a_std, source_stats['audio_mean'], source_stats['audio_std']).astype(np.float32)
+            vx2 = match_stats(vx, v_mean, v_std, source_stats['visual_mean'], source_stats['visual_std']).astype(np.float32)
+
+            videoText[stem] = tx2.reshape(1, -1)
+            videoAudio[stem] = ax2.reshape(1, -1)
+            videoVisual[stem] = vx2.reshape(1, -1)
+
     # Keep tuple format compatible with IEMOCAP loader implementation.
     payload = (
         videoIDs,
@@ -265,6 +346,10 @@ def main():
         "[Build] audio_status "
         + " ".join([f"{k}={v}" for k, v in audio_stats.items()])
     )
+    if source_stats is not None:
+        print(f"[Build] source_align=on source_pkl={source_pkl}")
+    else:
+        print("[Build] source_align=off")
     print(f"[Build] out={out}")
 
 
