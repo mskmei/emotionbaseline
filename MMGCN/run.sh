@@ -16,6 +16,6 @@ CUDA_VISIBLE_DEVICES=1 python train.py \
   --Deep_GCN_nlayers 4 \
   --class-weight \
   --use_speaker \
-  --dial_test_path /raid_zoe/home/lr/wangyi/sign/eJSL_dial/mmgcn/dial_test_iemocap.pkl \
+  --dial_test_path /raid_zoe/home/lr/maokeyu/sign/dial_test_iemocap.pkl \
   --dial_eval_every 1 \
   --dial_save_dir ./saved/dial_eval
