@@ -15,6 +15,26 @@ def parse_dial_sample_id(name: str) -> Optional[Tuple[str, int, int, str]]:
     return sd_id, int(dialogue_idx), int(utterance_idx), label
 
 
+def normalize_clip_name(raw: str) -> Optional[str]:
+    s = Path(str(raw).strip()).stem
+    m = re.search(r"(SD\d{2}-\d{2}-\d{2}[AJNS])", s)
+    if m is None:
+        return None
+    clip = m.group(1)
+    return clip if parse_dial_sample_id(clip) is not None else None
+
+
+def unique_keep_order(items: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for x in items:
+        if x in seen:
+            continue
+        seen.add(x)
+        out.append(x)
+    return out
+
+
 def dial_to_meld_label(label: str) -> str:
     # Keep test labels compatible with MELD label_change.
     mapping = {
@@ -39,10 +59,17 @@ def read_dial_names(path: Path) -> List[str]:
             for row in reader:
                 v = row.get("clip_name") or row.get("stem") or row.get("filename")
                 if v:
-                    out.append(Path(str(v).strip()).stem)
-        return out
+                    clip = normalize_clip_name(str(v))
+                    if clip is not None:
+                        out.append(clip)
+        return unique_keep_order(out)
 
-    return [Path(x).stem for x in lines]
+    out = []
+    for x in lines:
+        clip = normalize_clip_name(x)
+        if clip is not None:
+            out.append(clip)
+    return unique_keep_order(out)
 
 
 def scan_dial_names_from_frame_root(frame_root: Path) -> List[str]:
@@ -51,29 +78,39 @@ def scan_dial_names_from_frame_root(frame_root: Path) -> List[str]:
     names = []
     for p in sorted(frame_root.iterdir()):
         # Typical layout: frame/SD01-01-01A/*.jpg
-        if p.is_dir() and parse_dial_sample_id(p.name) is not None:
-            names.append(p.name)
+        if p.is_dir():
+            clip = normalize_clip_name(p.name)
+            if clip is not None:
+                names.append(clip)
             continue
         # Fallback for possible file-style entries.
-        stem = p.stem
-        if parse_dial_sample_id(stem) is not None:
-            names.append(stem)
-    return names
+        clip = normalize_clip_name(p.stem)
+        if clip is not None:
+            names.append(clip)
+    return unique_keep_order(names)
 
 
 def collect_dial_names(dial_list: Optional[Path], frame_root: Optional[Path]) -> List[str]:
+    frame_names: List[str] = []
+    if frame_root is not None:
+        frame_names = scan_dial_names_from_frame_root(frame_root)
+
     if dial_list is not None and dial_list.exists():
         names = read_dial_names(dial_list)
-        print(f"[Prepare] using dial list: {dial_list}  n={len(names)}")
-        return names
+        if frame_names:
+            frame_set = set(frame_names)
+            names = [x for x in names if x in frame_set]
+            print(f"[Prepare] using dial list filtered by frame_root: {dial_list}  n={len(names)}")
+        else:
+            print(f"[Prepare] using dial list: {dial_list}  n={len(names)}")
+        return unique_keep_order(names)
 
     if dial_list is not None:
         print(f"[Warn] dial list not found: {dial_list}")
 
     if frame_root is not None:
-        names = scan_dial_names_from_frame_root(frame_root)
-        print(f"[Prepare] using frame scan: {frame_root}  n={len(names)}")
-        return names
+        print(f"[Prepare] using frame scan: {frame_root}  n={len(frame_names)}")
+        return unique_keep_order(frame_names)
 
     return []
 
