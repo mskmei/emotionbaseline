@@ -1,5 +1,4 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 import numpy as np, argparse, time, pickle, random
 import torch
