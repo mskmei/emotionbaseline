@@ -171,17 +171,21 @@ class Processor():
 
     def _save_stage_report(self, stage, outputs):
         if not self.args.train.get('save_cls_report', False):
+            self.args.logger['process'].warning(f"[{stage}] skip report: save_cls_report=False")
             return
         if outputs is None or len(outputs) == 0:
+            self.args.logger['process'].warning(f"[{stage}] skip report: no outputs")
             return
 
         # Only for ERC-like classification outputs with preds/labels.
         if not isinstance(outputs[0], dict) or ('preds' not in outputs[0]) or ('labels' not in outputs[0]):
+            self.args.logger['process'].warning(f"[{stage}] skip report: outputs missing preds/labels")
             return
 
         preds = np.concatenate([rec['preds'].detach().cpu().numpy() for rec in outputs])
         labels = np.concatenate([rec['labels'].detach().cpu().numpy() for rec in outputs])
         if len(labels) == 0:
+            self.args.logger['process'].warning(f"[{stage}] skip report: empty labels")
             return
 
         label_map = self.dataset.tokenizer_['labels']['itol']
@@ -202,6 +206,7 @@ class Processor():
                 mapped.append((g2, p2))
 
             if not mapped:
+                self.args.logger['process'].warning(f"[{stage}] skip report: no labels matched report_label_map")
                 return
 
             anjs_to_idx = {k: i for i, k in enumerate(target_names)}

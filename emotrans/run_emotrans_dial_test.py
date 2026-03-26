@@ -2,6 +2,7 @@ import os
 import sys
 import yaml
 import warnings
+from pathlib import Path
 
 warnings.filterwarnings("ignore")
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -30,7 +31,10 @@ def main():
     args.train["test_every_epoch"] = True
     args.train["log_step_rate"] = 1.0
     args.train["save_cls_report"] = True
-    args.train["report_dir"] = "./saved/meld_dial_metrics"
+    script_dir = Path(__file__).resolve().parent
+    report_dir = script_dir / "saved" / "meld_dial_metrics"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    args.train["report_dir"] = str(report_dir)
     args.train["report_style"] = "anjs"
     args.train["report_label_map"] = {
         "anger": "A",
@@ -51,6 +55,7 @@ def main():
 
     model, dataset = import_model(args)
     processor = Processor(args, model, dataset)
+    print("[Info] report_dir:", args.train["report_dir"])
     result = processor._train()
 
     print("[Done] valid:", result["valid"])
