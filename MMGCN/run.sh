@@ -1,3 +1,21 @@
-python train.py --base-model 'LSTM' --graph-model --nodal-attention --dropout 0.4 --lr 0.0003 --batch-size 16 --l2 0.00003 --graph_type='MMGCN' --epochs=20 --graph_construct='direct' --multi_modal --mm_fusion_mthd='concat_subsequently' --modals='avl' --Dataset='IEMOCAP' --Deep_GCN_nlayers 4 --class-weight --use_speaker
-
-python train.py --base-model 'LSTM' --graph-model --nodal-attention --dropout 0.4 --lr 0.001 --batch-size 16 --l2 0.0 --graph_type='MMGCN' --epochs=60 --graph_construct='direct' --multi_modal --mm_fusion_mthd='concat_subsequently' --modals='avl' --Dataset='MELD' --Deep_GCN_nlayers 4  --use_speaker
+python train.py \
+  --base-model LSTM \
+  --graph-model \
+  --nodal-attention \
+  --dropout 0.4 \
+  --lr 0.0003 \
+  --batch-size 16 \
+  --l2 0.00003 \
+  --graph_type MMGCN \
+  --epochs 20 \
+  --graph_construct direct \
+  --multi_modal \
+  --mm_fusion_mthd concat_subsequently \
+  --modals avl \
+  --Dataset IEMOCAP \
+  --Deep_GCN_nlayers 4 \
+  --class-weight \
+  --use_speaker \
+  --dial_test_path /raid_zoe/home/lr/wangyi/sign/eJSL_dial/mmgcn/dial_test_iemocap.pkl \
+  --dial_eval_every 1 \
+  --dial_save_dir ./saved/dial_eval
