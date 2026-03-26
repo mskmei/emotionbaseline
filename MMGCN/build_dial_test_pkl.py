@@ -110,6 +110,11 @@ def build_visual_seq(frame_dir: Path, length: int):
     return np.stack([frame_feature_342(p) for p in chosen], axis=0)
 
 
+def build_single_visual(frame_dir: Path):
+    seq = build_visual_seq(frame_dir, 1)
+    return seq[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build MMGCN external DIAL test pkl directly from txt+frame")
     parser.add_argument("--dial_list", type=str, required=True, help="CSV/TXT with DIAL sample names")
@@ -157,35 +162,36 @@ def main():
             dropped += 1
             continue
 
-        turns = turns[:utt_idx]
-        L = len(turns)
-        if L <= 0:
+        # Keep exactly one labeled timestep per selected sample to align with
+        # clip-level evaluation (N should equal number of selected clips).
+        turns_ctx = turns[:utt_idx]
+        if len(turns_ctx) <= 0:
             dropped += 1
             continue
 
-        # Text sequence features.
-        text_seq = np.stack([hash_text_vec(t[1], d_text) for t in turns], axis=0)
-        # Visual sequence features from sampled frames.
-        visual_seq = build_visual_seq(frame_dir, L)
-        # Audio unavailable -> zeros.
-        audio_seq = np.zeros((L, d_audio), dtype=np.float32)
+        # Build one-step sequence using target utterance with context concatenated.
+        target_speaker, _target_text = turns_ctx[-1]
+        merged_text = ' '.join([t[1] for t in turns_ctx])
+        text_seq = hash_text_vec(merged_text, d_text).reshape(1, -1)
+        visual_seq = build_single_visual(frame_dir).reshape(1, -1)
+        audio_seq = np.zeros((1, d_audio), dtype=np.float32)
 
-        # Speakers for IEMOCAP loader: expects ['M','F',...].
-        spk_raw = [t[0] for t in turns]
+        # Speakers for IEMOCAP loader: expects ['M','F',...]. Use deterministic per-dialog mapping.
+        spk_raw = [t[0] for t in turns_ctx]
         uniq = []
         for s in spk_raw:
             if s not in uniq:
                 uniq.append(s)
         spk_map = {s: ('M' if i % 2 == 0 else 'F') for i, s in enumerate(uniq)}
-        spk_seq = [spk_map[s] for s in spk_raw]
+        spk_seq = [spk_map[target_speaker]]
 
         videoIDs[stem] = stem
         videoSpeakers[stem] = spk_seq
-        videoLabels[stem] = [y] * L
+        videoLabels[stem] = [y]
         videoText[stem] = text_seq
         videoAudio[stem] = audio_seq
         videoVisual[stem] = visual_seq
-        videoSentence[stem] = [t[1] for t in turns]
+        videoSentence[stem] = [merged_text]
         testVid.append(stem)
         kept += 1
 
