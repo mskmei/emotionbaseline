@@ -274,7 +274,9 @@ class EmoSKD(ModelForClassification):
 
         flow_mask = inputs['input_ids'] == self.mask_token_id
         label_mask = inputs['emo_flow_token_label'] >= 0
-        if self.args.model['use_mlm']:
+        # Auxiliary MLM loss is only used in training; skip for eval/test to avoid
+        # mismatches when context turns are intentionally unlabeled.
+        if self.args.model['use_mlm'] and stage == 'train':
             mlm_loss, state_sel = [], [23]
             for si,state in enumerate(plm_outs.hidden_states[1:]):
                 if state_sel and si not in state_sel: continue
