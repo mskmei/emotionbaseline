@@ -15,6 +15,17 @@ def parse_dial_sample_id(name: str) -> Optional[Tuple[str, int, int, str]]:
     return sd_id, int(dialogue_idx), int(utterance_idx), label
 
 
+def dial_to_meld_label(label: str) -> str:
+    # Keep test labels compatible with MELD label_change.
+    mapping = {
+        "A": "anger",
+        "N": "neutral",
+        "J": "joy",
+        "S": "sadness",
+    }
+    return mapping.get(label, "neutral")
+
+
 def read_dial_names(path: Path) -> List[str]:
     lines = [x.strip() for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
     if not lines:
@@ -68,7 +79,7 @@ def build_dial_test_json(dial_list: Path, txt_root: Path):
         for i in range(utterance_idx):
             speaker, text = turns[i]
             # Keep earlier turns as neutral to avoid injecting unknown labels.
-            emo = label if i == utterance_idx - 1 else "N"
+            emo = dial_to_meld_label(label) if i == utterance_idx - 1 else "neutral"
             conv.append({"text": text, "speaker": speaker, "emotion": emo})
         convs.append(conv)
 
