@@ -1,13 +1,3 @@
-cd /raid_zoe/home/lr/maokeyu/sign/emotionbaseline/MMGCN
-
-python build_dial_test_pkl.py \
-  --dial_list /home/lr/wangyi/Sign/RO-MAN/eJSL_dial_dataset/ejsldial_filenames.csv \
-  --txt_root /raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue \
-  --frame_root /raid_zoe/home/lr/wangyi/sign/eJSL_dial/frame \
-  --dataset IEMOCAP \
-  --out_pkl /raid_zoe/home/lr/wangyi/sign/eJSL_dial/mmgcn/dial_test_iemocap.pkl
-
-
 CUDA_VISIBLE_DEVICES=1 python train.py \
   --base-model LSTM \
   --graph-model \

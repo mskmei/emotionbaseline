@@ -17,9 +17,9 @@ class IEMOCAPDataset(Dataset):
 
     def __getitem__(self, index):
         vid = self.keys[index]
-        return torch.FloatTensor(self.videoText[vid]),\
-               torch.FloatTensor(self.videoVisual[vid]),\
-               torch.FloatTensor(self.videoAudio[vid]),\
+         return torch.FloatTensor(np.asarray(self.videoText[vid], dtype=np.float32)),\
+             torch.FloatTensor(np.asarray(self.videoVisual[vid], dtype=np.float32)),\
+             torch.FloatTensor(np.asarray(self.videoAudio[vid], dtype=np.float32)),\
                torch.FloatTensor([[1,0] if x=='M' else [0,1] for x in\
                                   self.videoSpeakers[vid]]),\
                torch.FloatTensor([1]*len(self.videoLabels[vid])),\
@@ -47,10 +47,10 @@ class MELDDataset(Dataset):
 
     def __getitem__(self, index):
         vid = self.keys[index]
-        return torch.FloatTensor(self.videoText[vid]),\
-               torch.FloatTensor(self.videoVisual[vid]),\
-               torch.FloatTensor(self.videoAudio[vid]),\
-               torch.FloatTensor(self.videoSpeakers[vid]),\
+         return torch.FloatTensor(np.asarray(self.videoText[vid], dtype=np.float32)),\
+             torch.FloatTensor(np.asarray(self.videoVisual[vid], dtype=np.float32)),\
+             torch.FloatTensor(np.asarray(self.videoAudio[vid], dtype=np.float32)),\
+             torch.FloatTensor(np.asarray(self.videoSpeakers[vid], dtype=np.float32)),\
                torch.FloatTensor([1]*len(self.videoLabels[vid])),\
                torch.LongTensor(self.videoLabels[vid]),\
                vid
@@ -202,9 +202,9 @@ class ExternalERCFeatureDataset(Dataset):
         qmask = self._speaker_to_tensor(self.videoSpeakers[vid])
         labels = self.videoLabels[vid]
 
-        return torch.FloatTensor(self.videoText[vid]), \
-               torch.FloatTensor(self.videoVisual[vid]), \
-               torch.FloatTensor(self.videoAudio[vid]), \
+         return torch.FloatTensor(np.asarray(self.videoText[vid], dtype=np.float32)), \
+             torch.FloatTensor(np.asarray(self.videoVisual[vid], dtype=np.float32)), \
+             torch.FloatTensor(np.asarray(self.videoAudio[vid], dtype=np.float32)), \
                qmask, \
                torch.FloatTensor([1] * len(labels)), \
                torch.LongTensor(labels), \

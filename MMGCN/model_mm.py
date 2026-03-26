@@ -165,7 +165,7 @@ class MM_GCN(nn.Module):
                         idx =dia_idx.copy()
                         idx[0] += m_start
                         idx[1] += n_start
-                        adj[idx] = dia_sim
+                        adj[idx[0], idx[1]] = dia_sim
 
             start += dia_len[i]
         d = adj.sum(1)
@@ -280,7 +280,7 @@ class MM_GCN2(nn.Module):
                         idx =dia_idx.copy()
                         idx[0] += m_start
                         idx[1] += n_start
-                        adj[idx] = 0.99999
+                        adj[idx[0], idx[1]] = 0.99999
 
             start += dia_len[i]
         d = adj.sum(1)
