@@ -142,14 +142,14 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
     row_probs = np.divide(matrix, np.maximum(row_sums, 1), where=np.ones_like(matrix, dtype=bool))
 
     sns.set_theme(style="ticks", context="talk")
-    plt.rcParams["font.family"] = "Arial"
+    plt.rcParams["font.family"] = "DejaVu Sans"
 
     fig, axes = plt.subplots(1, 2, figsize=(12.8, 5.8), dpi=260, gridspec_kw={"wspace": 0.25})
-    fig.patch.set_facecolor("#F7F8FA")
+    fig.patch.set_alpha(0)
 
     ax0, ax1 = axes[0], axes[1]
     for ax in axes:
-        ax.set_facecolor("#FBFCFE")
+        ax.set_facecolor("none")
 
     # Panel A: absolute transition counts
     sns.heatmap(
@@ -164,6 +164,7 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         square=True,
         xticklabels=LABELS,
         yticklabels=LABELS,
+        # annot_kws={"size": 12},
     )
     ax0.set_title("A. Transition Count", fontsize=12.5, weight="bold", pad=10)
     ax0.set_xlabel("Current Emotion", fontsize=16, fontweight="bold")
@@ -192,6 +193,7 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         yticklabels=LABELS,
         vmin=0.0,
         vmax=max(0.4, float(row_probs.max())),
+        # annot_kws={"size": 12},
     )
     ax1.set_title("B. Conditional Probability", fontsize=12.5, weight="bold", pad=10)
     ax1.set_xlabel("Current Emotion", fontsize=16, fontweight="bold")
@@ -202,11 +204,11 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         lab.set_fontweight("bold")
 
     # No title per user request.
-    fig.text(0.5, 0.015, "A=Anger, N=Neutral, J=Joy, S=Sadness", ha="center", fontsize=12, fontweight="bold", color="#3D3D3D")
+    fig.text(0.5, 0.015, "A=Anger, N=Neutral, J=Joy, S=Sadness", ha="center", fontsize=15, fontweight="bold", color="#3D3D3D")
 
     plt.tight_layout(rect=[0, 0.03, 1, 1])
     plt.savefig(out_dir / "transition_heatmap.png", bbox_inches="tight", facecolor=fig.get_facecolor())
-    plt.savefig(out_dir / "transition_heatmap.pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(out_dir / "transition_heatmap.pdf", bbox_inches="tight", facecolor=fig.get_facecolor(), transparent=True)
     plt.close(fig)
 
 
