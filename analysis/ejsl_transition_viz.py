@@ -137,36 +137,81 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         return
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    total = int(matrix.sum())
     row_sums = matrix.sum(axis=1, keepdims=True)
     row_probs = np.divide(matrix, np.maximum(row_sums, 1), where=np.ones_like(matrix, dtype=bool))
 
-    annot = np.empty_like(matrix, dtype=object)
+    sns.set_theme(style="ticks", context="paper")
+    plt.rcParams["font.family"] = "DejaVu Serif"
+
+    fig, axes = plt.subplots(1, 2, figsize=(12.8, 5.8), dpi=260, gridspec_kw={"wspace": 0.25})
+    fig.patch.set_facecolor("#F7F8FA")
+
+    ax0, ax1 = axes[0], axes[1]
+    for ax in axes:
+        ax.set_facecolor("#FBFCFE")
+
+    # Panel A: absolute transition counts
+    sns.heatmap(
+        matrix,
+        ax=ax0,
+        cmap="crest",
+        linewidths=1.1,
+        linecolor="#FFFFFF",
+        annot=True,
+        fmt="d",
+        cbar_kws={"label": "Count"},
+        square=True,
+        xticklabels=LABELS,
+        yticklabels=LABELS,
+    )
+    ax0.set_title("A. Transition Count", fontsize=12.5, weight="bold", pad=10)
+    ax0.set_xlabel("Current Emotion", fontsize=11)
+    ax0.set_ylabel("Previous Emotion", fontsize=11)
+
+    # Panel B: row-normalized transition probabilities
+    annot_prob = np.empty_like(matrix, dtype=object)
     for i in range(matrix.shape[0]):
         for j in range(matrix.shape[1]):
-            annot[i, j] = f"{int(matrix[i, j])}\\n{row_probs[i, j]:.2%}"
-
-    plt.figure(figsize=(8.8, 7.2), dpi=220)
-    sns.set_theme(style="whitegrid")
-    ax = sns.heatmap(
+            annot_prob[i, j] = f"{row_probs[i, j]:.1%}"
+    sns.heatmap(
         row_probs,
-        cmap="YlGnBu",
-        linewidths=0.8,
+        ax=ax1,
+        cmap="YlOrBr",
+        linewidths=1.1,
         linecolor="#FFFFFF",
-        annot=annot,
+        annot=annot_prob,
         fmt="",
-        cbar_kws={"label": "P(curr | prev)"},
+        cbar_kws={"label": "P(curr | prev)", "format": "%.0f%%"},
         square=True,
         xticklabels=LABELS,
         yticklabels=LABELS,
         vmin=0.0,
         vmax=max(0.4, float(row_probs.max())),
     )
-    ax.set_title("eJSL Emotion Transition Matrix", pad=14, fontsize=14, weight="bold")
-    ax.set_xlabel("Current Utterance Emotion", fontsize=12)
-    ax.set_ylabel("Previous Utterance Emotion", fontsize=12)
-    plt.tight_layout()
-    plt.savefig(out_dir / "transition_heatmap.png", bbox_inches="tight")
-    plt.close()
+    ax1.set_title("B. Conditional Probability", fontsize=12.5, weight="bold", pad=10)
+    ax1.set_xlabel("Current Emotion", fontsize=11)
+    ax1.set_ylabel("Previous Emotion", fontsize=11)
+
+    fig.suptitle(
+        f"eJSL Emotion Transition Structure (N={total} transitions)",
+        fontsize=15,
+        weight="bold",
+        y=0.98,
+    )
+    fig.text(
+        0.5,
+        0.015,
+        "Labels: A=Anger, N=Neutral, J=Joy, S=Sadness",
+        ha="center",
+        fontsize=10,
+        color="#4A4A4A",
+    )
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(out_dir / "transition_heatmap.png", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.savefig(out_dir / "transition_heatmap.pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
 
 
 def draw_sankey(matrix: np.ndarray, out_dir: Path) -> None:
@@ -176,14 +221,25 @@ def draw_sankey(matrix: np.ndarray, out_dir: Path) -> None:
         print(f"[Warn] skip sankey (plotly unavailable): {exc}")
         return
 
+    def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+        c = hex_color.strip().lstrip("#")
+        r = int(c[0:2], 16)
+        g = int(c[2:4], 16)
+        b = int(c[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
     out_dir.mkdir(parents=True, exist_ok=True)
+    total = int(matrix.sum())
     left_nodes = [f"Prev {x}" for x in LABELS]
     right_nodes = [f"Curr {x}" for x in LABELS]
     labels = left_nodes + right_nodes
+    base_colors = ["#2A9D8F", "#457B9D", "#E9C46A", "#E76F51"]
 
     sources: List[int] = []
     targets: List[int] = []
     values: List[int] = []
+    link_colors: List[str] = []
+    customdata: List[Tuple[str, str, float]] = []
     for i in range(4):
         for j in range(4):
             c = int(matrix[i, j])
@@ -192,33 +248,66 @@ def draw_sankey(matrix: np.ndarray, out_dir: Path) -> None:
             sources.append(i)
             targets.append(4 + j)
             values.append(c)
+            link_colors.append(_hex_to_rgba(base_colors[i], 0.42))
+            customdata.append((LABELS[i], LABELS[j], c / max(total, 1)))
+
+    x_pos = [0.03, 0.03, 0.03, 0.03, 0.97, 0.97, 0.97, 0.97]
+    y_pos = [0.08, 0.33, 0.58, 0.83, 0.08, 0.33, 0.58, 0.83]
 
     fig = go.Figure(
         data=[
             go.Sankey(
-                arrangement="snap",
+                arrangement="fixed",
                 valueformat="d",
                 node=dict(
                     pad=16,
-                    thickness=18,
-                    line=dict(color="rgba(30,30,30,0.35)", width=0.6),
+                    thickness=20,
+                    line=dict(color="rgba(38,38,38,0.35)", width=0.8),
                     label=labels,
-                    color=["#2A9D8F", "#457B9D", "#E9C46A", "#E76F51"] * 2,
+                    color=base_colors + base_colors,
+                    x=x_pos,
+                    y=y_pos,
                 ),
-                link=dict(source=sources, target=targets, value=values),
+                link=dict(
+                    source=sources,
+                    target=targets,
+                    value=values,
+                    color=link_colors,
+                    customdata=customdata,
+                    hovertemplate=(
+                        "<b>%{customdata[0]} -> %{customdata[1]}</b><br>"
+                        "Count: %{value:d}<br>"
+                        "Global share: %{customdata[2]:.2%}<extra></extra>"
+                    ),
+                ),
             )
         ]
     )
     fig.update_layout(
-        title_text="eJSL Emotion Flow (Prev -> Curr)",
-        font=dict(size=13),
-        width=980,
-        height=620,
-        margin=dict(l=16, r=16, t=56, b=16),
+        title={
+            "text": (
+                "<b>eJSL Emotion Flow</b>"
+                f"<br><span style='font-size:12px;color:#4c566a;'>"
+                f"Previous -> Current transition links (N={total})"
+                "</span>"
+            ),
+            "x": 0.5,
+            "xanchor": "center",
+        },
+        font=dict(size=14, family="Georgia, Times New Roman, serif", color="#1F2430"),
+        width=1080,
+        height=680,
+        margin=dict(l=24, r=24, t=82, b=24),
+        paper_bgcolor="#F7F8FA",
+        plot_bgcolor="#F7F8FA",
     )
 
     html_path = out_dir / "transition_sankey.html"
     fig.write_html(str(html_path), include_plotlyjs="cdn")
+    try:
+        fig.write_image(str(out_dir / "transition_sankey.png"), scale=2)
+    except Exception:
+        pass
     print(f"[Save] sankey html: {html_path}")
 
 
