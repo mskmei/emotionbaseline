@@ -1,0 +1,6 @@
+{
+  "manifest_samples": 1920,
+  "common_samples": 1920,
+  "case_telme_correct_emotrans_wrong": 74,
+  "case_telme_correct_eanwh_wrong": 258
+}
