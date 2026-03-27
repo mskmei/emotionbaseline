@@ -107,12 +107,13 @@ class ERCDataset_Multi(Dataset):
             self.info['num_conv'][stage] = len(raw_convs)
 
             for ci, r_conv in enumerate(raw_convs):
-                txts, spks, labs = [], [], []
+                txts, spks, labs, sids = [], [], [], []
                 for utt in r_conv:
                     txt, spk, lab = utt['text'].strip(), utt['speaker'].strip(), utt.get('emotion')
                     txts.append(txt)
                     spks.append(spk)
                     labs.append(lab)
+                    sids.append(str(utt.get('sample_id', '')).strip())
 
                     if spk not in self.info['num_conv_speaker'][stage]: self.info['num_conv_speaker'][stage].append(spk)
 
@@ -123,6 +124,7 @@ class ERCDataset_Multi(Dataset):
                     'texts': txts,
                     'speakers': spks,
                     'emotions': labs,
+                    'sample_ids': sids,
                 })
                 self.info['num_conv_utt'][stage].append(len(txts))
                 self.info['num_conv_utt_token'][stage].append([len(txt.split()) for txt in txts])

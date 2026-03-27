@@ -2,6 +2,7 @@
 EANwH 测试：在 test.csv 上评估，同一视频多段 logits 取平均再 argmax。
 """
 import argparse
+import csv
 from collections import defaultdict
 from pathlib import Path
 
@@ -65,6 +66,7 @@ def main():
     p.add_argument("--hand_stride", type=int, default=1)
     p.add_argument("--save_dir", type=str, default="outputs_eanwh")
     p.add_argument("--report_prefix", type=str, default="dial_eval")
+    p.add_argument("--save_predictions", action="store_true")
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -126,6 +128,7 @@ def main():
     all_preds, all_golds = [], []
     with torch.no_grad():
         all_logits_list = []
+        pred_rows = []
         for stem, stem_entries in by_video.items():
             label = stem_entries[0]["label"]
             ds = SequenceFrameDatasetEANwH(stem_entries, img_size=args.img_size, hand_feat_dir=hand_feat_dir)
@@ -144,6 +147,14 @@ def main():
             total_videos += 1
             all_preds.append(pred)
             all_golds.append(label)
+            pred_rows.append(
+                {
+                    "sample_id": stem,
+                    "gold_label": LABEL_NAMES[int(label)],
+                    "pred_label": LABEL_NAMES[int(pred)],
+                    "correct": int(int(pred) == int(label)),
+                }
+            )
             logits_mean = logits_cat.mean(dim=0, keepdim=True)
             all_logits_list.append(logits_mean.cpu().numpy())
         all_logits_np = np.concatenate(all_logits_list, axis=0)  # (N, 4)
@@ -163,6 +174,15 @@ def main():
     print(f"[Test] gold_counts(A,N,J,S)={gold_counts}")
     print(f"[Test] pred_counts(A,N,J,S)={pred_counts}")
     save_eval_reports(all_golds, all_preds, Path(args.save_dir), args.report_prefix)
+
+    if args.save_predictions:
+        out_csv = Path(args.save_dir) / f"{args.report_prefix}_predictions.csv"
+        out_csv.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_csv, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["sample_id", "gold_label", "pred_label", "correct"])
+            writer.writeheader()
+            writer.writerows(pred_rows)
+        print(f"[Test] prediction details saved to: {out_csv}")
 
 
 if __name__ == "__main__":

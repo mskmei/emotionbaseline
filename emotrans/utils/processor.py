@@ -1,4 +1,5 @@
 import torch, time, math
+import csv
 import numpy as np
 from pathlib import Path
 from sklearn import metrics
@@ -186,6 +187,10 @@ class Processor():
 
         preds = np.concatenate([rec['preds'].detach().cpu().numpy() for rec in outputs])
         labels = np.concatenate([rec['labels'].detach().cpu().numpy() for rec in outputs])
+        if 'index' in outputs[0]:
+            idxs = np.concatenate([rec['index'].detach().cpu().numpy() for rec in outputs])
+        else:
+            idxs = np.arange(len(labels), dtype=np.int64)
         if len(labels) == 0:
             self.args.logger['process'].warning(f"[{stage}] skip report: empty labels")
             return
@@ -259,6 +264,48 @@ class Processor():
                 f.write(f"pred_counts={pred_counts}\n\n")
             f.write(report)
 
+        # Save per-sample details for case analysis.
+        detail_csv = save_dir / f"{prefix}_predictions.csv"
+        with open(detail_csv, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'sample_id',
+                'index',
+                'text',
+                'speaker',
+                'gold_label_raw',
+                'pred_label_raw',
+                'gold_label',
+                'pred_label',
+                'correct',
+            ])
+            stage_samples = self.dataset.datas.get(stage, [])
+            for idx, g, p in zip(idxs.tolist(), labels.tolist(), preds.tolist()):
+                sample = stage_samples[int(idx)] if 0 <= int(idx) < len(stage_samples) else {}
+                sample_id = sample.get('sample_id', '')
+                text = sample.get('text', '')
+                speaker = sample.get('speaker', '')
+                g_raw = str(label_map[int(g)])
+                p_raw = str(label_map[int(p)])
+                if report_style == 'anjs':
+                    g_out = map_cfg.get(g_raw, '')
+                    p_out = map_cfg.get(p_raw, '')
+                else:
+                    g_out = g_raw
+                    p_out = p_raw
+                writer.writerow([
+                    sample_id,
+                    int(idx),
+                    text,
+                    speaker,
+                    g_raw,
+                    p_raw,
+                    g_out,
+                    p_out,
+                    int(int(g) == int(p)),
+                ])
+
         self.args.logger['process'].warning(
             f"[{stage}] report saved: {save_dir / (prefix + '_classification_report.txt')}"
         )
+        self.args.logger['process'].warning(f"[{stage}] predictions saved: {detail_csv}")

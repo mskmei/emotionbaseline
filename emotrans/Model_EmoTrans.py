@@ -79,6 +79,7 @@ class ERCDataset_EmoTrans(ERCDataset_Multi):
                     if label_category == -1: continue
                     sample = {
                         'index':    len(samples),
+                        'sample_id': conv.get('sample_ids', [''] * len(conv['texts']))[ui],
                         'text':     conv['texts'][ui],
                         'speaker':  conv['speakers'][ui],
                         'emotion':  conv['emotions'][ui],
@@ -329,6 +330,7 @@ class EmoSKD(ModelForClassification):
             'logits': logits,
             'preds':  preds[mask.cpu()],
             'labels': inputs['label'][mask],
+            'index':  inputs['index'][mask],
         }
     
     def get_features(self, index, features, method='fetch'):

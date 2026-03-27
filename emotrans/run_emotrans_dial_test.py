@@ -25,6 +25,11 @@ def main():
     args.train.update(run_config["train"])
     args.model.update(run_config["model"])
 
+    epochs_override = os.environ.get("EMOTRANS_EPOCHS", "").strip()
+    if epochs_override:
+        args.train["epochs"] = int(epochs_override)
+        args.train["early_stop"] = min(int(args.train.get("early_stop", 3)), int(epochs_override))
+
     args.train["inference"] = False
     args.train["do_valid"] = True
     args.train["do_test"] = True
@@ -56,6 +61,7 @@ def main():
     model, dataset = import_model(args)
     processor = Processor(args, model, dataset)
     print("[Info] report_dir:", args.train["report_dir"])
+    print("[Info] epochs:", args.train["epochs"])
     result = processor._train()
 
     print("[Done] valid:", result["valid"])

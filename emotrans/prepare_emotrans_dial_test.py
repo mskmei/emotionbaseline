@@ -196,7 +196,8 @@ def build_dial_test_json(dial_names: List[str], txt_root: Path, translator: Opti
             # Clip-level evaluation: only the final utterance is labeled.
             # Context utterances stay unlabeled so they are not counted as extra test samples.
             emo = dial_to_meld_label(label) if i == utterance_idx - 1 else ""
-            conv.append({"text": text, "speaker": speaker, "emotion": emo})
+            sid = name if i == utterance_idx - 1 else ""
+            conv.append({"text": text, "speaker": speaker, "emotion": emo, "sample_id": sid})
         convs.append(conv)
 
     return convs

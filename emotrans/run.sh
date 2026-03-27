@@ -14,6 +14,7 @@ if [ "x$FRAME_ROOT" = "x" ]; then FRAME_ROOT="/raid_zoe/home/lr/wangyi/sign/eJSL
 if [ "x$TXT_ROOT" = "x" ]; then TXT_ROOT="/raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue"; fi
 if [ "x$TRANSLATE_TO_EN" = "x" ]; then TRANSLATE_TO_EN="1"; fi
 if [ "x$TRANSLATION_MODEL" = "x" ]; then TRANSLATION_MODEL="Helsinki-NLP/opus-mt-ja-en"; fi
+if [ "x$EMOTRANS_EPOCHS" = "x" ]; then EMOTRANS_EPOCHS="1"; fi
 
 echo "[Run] emotrans dir: ${SCRIPT_DIR}"
 echo "[Run] preparing dataset: ${NEW_DATASET}"
@@ -25,7 +26,7 @@ else
 fi
 
 echo "[Run] training + per-epoch dial test"
-python run_emotrans_dial_test.py
+EMOTRANS_EPOCHS="${EMOTRANS_EPOCHS}" python run_emotrans_dial_test.py
 
 REPORT_DIR="${SCRIPT_DIR}/saved/meld_dial_metrics"
 echo "[Run] checking reports in: ${REPORT_DIR}"

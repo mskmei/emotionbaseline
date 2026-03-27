@@ -1,4 +1,5 @@
 import argparse
+import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -322,6 +323,39 @@ def evaluation(model_t, audio_s, video_s, fusion, dataloader, device):
     return pred_list, gold_list
 
 
+def save_prediction_details(samples: List[Sample], all_golds: List[int], all_preds: List[int], save_dir: Path, prefix: str) -> None:
+    save_dir.mkdir(parents=True, exist_ok=True)
+    out_csv = save_dir / f"{prefix}_predictions.csv"
+    with open(out_csv, "w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            [
+                "sample_id",
+                "sd_id",
+                "dialogue_idx",
+                "utterance_idx",
+                "frame_dir",
+                "gold_label",
+                "pred_label",
+                "correct",
+            ]
+        )
+        for sample, g, p in zip(samples, all_golds, all_preds):
+            writer.writerow(
+                [
+                    sample.sample_id,
+                    sample.sd_id,
+                    sample.dialogue_idx,
+                    sample.utterance_idx,
+                    str(sample.frame_dir),
+                    TARGET_LABELS[int(g)],
+                    TARGET_LABELS[int(p)],
+                    int(int(g) == int(p)),
+                ]
+            )
+    print(f"[Eval] prediction details saved: {out_csv}")
+
+
 def save_reports(all_golds: List[int], all_preds: List[int], save_dir: Path, prefix: str) -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
     labels_idx = list(range(len(TARGET_LABELS)))
@@ -381,6 +415,7 @@ def parse_args():
     parser.add_argument("--save_dir", type=str, default="./IEMOCAP/outputs_ejsl")
     parser.add_argument("--report_prefix", type=str, default="telme_ejsl")
     parser.add_argument("--max_samples", type=int, default=0)
+    parser.add_argument("--save_predictions", action="store_true")
     return parser.parse_args()
 
 
@@ -412,6 +447,7 @@ def main():
         samples = samples[: args.max_samples]
 
     sessions = []
+    valid_samples: List[Sample] = []
     dropped = defaultdict(int)
     for s in samples:
         session = build_session_for_sample(s, txt_root, wav_map)
@@ -424,6 +460,7 @@ def main():
             dropped["empty_frame_dir"] += 1
             continue
         sessions.append(session)
+        valid_samples.append(s)
 
     if not sessions:
         raise RuntimeError("No valid sessions. Check frame/txt root and naming format.")
@@ -473,6 +510,9 @@ def main():
     with torch.no_grad():
         preds, golds = evaluation(model_t, audio_s, video_s, fusion, test_loader, device)
 
+    if len(valid_samples) != len(golds):
+        raise RuntimeError(f"Prediction count mismatch: samples={len(valid_samples)} vs golds={len(golds)}")
+
     acc = np.mean(np.array(preds) == np.array(golds))
     print(f"[Eval] samples={len(golds)} acc={acc:.4f}")
 
@@ -485,6 +525,8 @@ def main():
     print(f"[Eval] pred_counts(A,N,J,S)={pred_counts}")
 
     save_reports(golds, preds, Path(args.save_dir), args.report_prefix)
+    if args.save_predictions:
+        save_prediction_details(valid_samples, golds, preds, Path(args.save_dir), args.report_prefix)
 
 
 if __name__ == "__main__":
