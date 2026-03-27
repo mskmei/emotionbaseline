@@ -203,10 +203,30 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
     for lab in ax1.get_xticklabels() + ax1.get_yticklabels():
         lab.set_fontweight("bold")
 
-    # No title per user request.
+    # No global title per user request; keep panel descriptions as captions.
+    fig.text(
+        0.24,
+        0.985,
+        "Panel A: Absolute transition counts",
+        ha="center",
+        va="top",
+        fontsize=13,
+        fontweight="bold",
+        color="#2F3A4A",
+    )
+    fig.text(
+        0.76,
+        0.985,
+        "Panel B: Row-normalized transition probabilities",
+        ha="center",
+        va="top",
+        fontsize=13,
+        fontweight="bold",
+        color="#2F3A4A",
+    )
     fig.text(0.5, 0.015, "A=Anger, N=Neutral, J=Joy, S=Sadness", ha="center", fontsize=15, fontweight="bold", color="#3D3D3D")
 
-    plt.tight_layout(rect=[0, 0.03, 1, 1])
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     plt.savefig(out_dir / "transition_heatmap.png", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.savefig(out_dir / "transition_heatmap.pdf", bbox_inches="tight", facecolor=fig.get_facecolor(), transparent=True)
     plt.close(fig)
