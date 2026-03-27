@@ -141,8 +141,8 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
     row_sums = matrix.sum(axis=1, keepdims=True)
     row_probs = np.divide(matrix, np.maximum(row_sums, 1), where=np.ones_like(matrix, dtype=bool))
 
-    sns.set_theme(style="ticks", context="paper")
-    plt.rcParams["font.family"] = "DejaVu Serif"
+    sns.set_theme(style="ticks", context="talk")
+    plt.rcParams["font.family"] = "Arial"
 
     fig, axes = plt.subplots(1, 2, figsize=(12.8, 5.8), dpi=260, gridspec_kw={"wspace": 0.25})
     fig.patch.set_facecolor("#F7F8FA")
@@ -166,8 +166,12 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         yticklabels=LABELS,
     )
     ax0.set_title("A. Transition Count", fontsize=12.5, weight="bold", pad=10)
-    ax0.set_xlabel("Current Emotion", fontsize=11)
-    ax0.set_ylabel("Previous Emotion", fontsize=11)
+    ax0.set_xlabel("Current Emotion", fontsize=16, fontweight="bold")
+    ax0.set_ylabel("Previous Emotion", fontsize=16, fontweight="bold")
+    ax0.set_title("")
+    ax0.tick_params(labelsize=14)
+    for lab in ax0.get_xticklabels() + ax0.get_yticklabels():
+        lab.set_fontweight("bold")
 
     # Panel B: row-normalized transition probabilities
     annot_prob = np.empty_like(matrix, dtype=object)
@@ -190,25 +194,17 @@ def draw_heatmap(matrix: np.ndarray, out_dir: Path) -> None:
         vmax=max(0.4, float(row_probs.max())),
     )
     ax1.set_title("B. Conditional Probability", fontsize=12.5, weight="bold", pad=10)
-    ax1.set_xlabel("Current Emotion", fontsize=11)
-    ax1.set_ylabel("Previous Emotion", fontsize=11)
+    ax1.set_xlabel("Current Emotion", fontsize=16, fontweight="bold")
+    ax1.set_ylabel("Previous Emotion", fontsize=16, fontweight="bold")
+    ax1.set_title("")
+    ax1.tick_params(labelsize=14)
+    for lab in ax1.get_xticklabels() + ax1.get_yticklabels():
+        lab.set_fontweight("bold")
 
-    fig.suptitle(
-        f"eJSL Emotion Transition Structure (N={total} transitions)",
-        fontsize=15,
-        weight="bold",
-        y=0.98,
-    )
-    fig.text(
-        0.5,
-        0.015,
-        "Labels: A=Anger, N=Neutral, J=Joy, S=Sadness",
-        ha="center",
-        fontsize=10,
-        color="#4A4A4A",
-    )
+    # No title per user request.
+    fig.text(0.5, 0.015, "A=Anger, N=Neutral, J=Joy, S=Sadness", ha="center", fontsize=12, fontweight="bold", color="#3D3D3D")
 
-    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     plt.savefig(out_dir / "transition_heatmap.png", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.savefig(out_dir / "transition_heatmap.pdf", bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -284,20 +280,11 @@ def draw_sankey(matrix: np.ndarray, out_dir: Path) -> None:
         ]
     )
     fig.update_layout(
-        title={
-            "text": (
-                "<b>eJSL Emotion Flow</b>"
-                f"<br><span style='font-size:12px;color:#4c566a;'>"
-                f"Previous -> Current transition links (N={total})"
-                "</span>"
-            ),
-            "x": 0.5,
-            "xanchor": "center",
-        },
-        font=dict(size=14, family="Georgia, Times New Roman, serif", color="#1F2430"),
+        title=None,
+        font=dict(size=18, family="Arial", color="#1F2430"),
         width=1080,
         height=680,
-        margin=dict(l=24, r=24, t=82, b=24),
+        margin=dict(l=24, r=24, t=24, b=24),
         paper_bgcolor="#F7F8FA",
         plot_bgcolor="#F7F8FA",
     )
