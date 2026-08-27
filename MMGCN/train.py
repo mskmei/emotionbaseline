@@ -28,6 +28,38 @@ def seed_everything(seed=seed):
     torch.backends.cudnn.deterministic = True
 
 
+MODALITY_ALIASES = {
+    'full': 'full',
+    'avl': 'full',
+    'text': 'text',
+    't': 'text',
+    'l': 'text',
+    'video': 'video',
+    'visual': 'video',
+    'v': 'video',
+    'audio': 'audio',
+    'a': 'audio',
+}
+
+
+def normalize_input_modality(value):
+    key = (value or 'full').strip().lower()
+    if key not in MODALITY_ALIASES:
+        valid = ', '.join(sorted(MODALITY_ALIASES))
+        raise ValueError('Unsupported input_modality={!r}; valid values: {}'.format(value, valid))
+    return MODALITY_ALIASES[key]
+
+
+def zero_unused_modalities(textf, visuf, acouf, input_modality):
+    if input_modality == 'text':
+        return textf, torch.zeros_like(visuf), torch.zeros_like(acouf)
+    if input_modality == 'video':
+        return torch.zeros_like(textf), visuf, torch.zeros_like(acouf)
+    if input_modality == 'audio':
+        return torch.zeros_like(textf), torch.zeros_like(visuf), acouf
+    return textf, visuf, acouf
+
+
 def get_train_valid_sampler(trainset, valid=0.1, dataset='IEMOCAP'):
     size = len(trainset)
     idx = list(range(size))
@@ -122,7 +154,13 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
         if train:
             optimizer.zero_grad()
         
-        textf, visuf, acouf, qmask, umask, label = [d.cuda() for d in data[:-1]] if cuda else data[:-1]        
+        textf, visuf, acouf, qmask, umask, label = [d.cuda() for d in data[:-1]] if cuda else data[:-1]
+        textf, visuf, acouf = zero_unused_modalities(
+            textf,
+            visuf,
+            acouf,
+            getattr(args, 'input_modality', 'full'),
+        )
 
         max_sequence_len.append(textf.size(0))
         
@@ -184,6 +222,12 @@ def train_or_eval_graph_model(model, loss_function, dataloader, epoch, cuda, mod
             optimizer.zero_grad()
         
         textf, visuf, acouf, qmask, umask, label = [d.cuda() for d in data[:-1]] if cuda else data[:-1]
+        textf, visuf, acouf = zero_unused_modalities(
+            textf,
+            visuf,
+            acouf,
+            getattr(args, 'input_modality', 'full'),
+        )
         if args.multi_modal:
             if args.mm_fusion_mthd=='concat':
                 if modals == 'avl':
@@ -389,7 +433,15 @@ if __name__ == '__main__':
 
     parser.add_argument('--dial_save_dir', type=str, default='./saved/dial_eval', help='Directory for saved DIAL reports')
 
+    parser.add_argument(
+        '--input_modality',
+        type=str,
+        default='full',
+        help='full, text/t/l, video/v/visual, or audio/a. Non-selected modality feature tensors are zeroed before the model.',
+    )
+
     args = parser.parse_args()
+    args.input_modality = normalize_input_modality(args.input_modality)
     today = datetime.datetime.now()
     print(args)
     if args.av_using_lstm:
@@ -401,12 +453,15 @@ if __name__ == '__main__':
         name_ = name_+'_speaker'
     if args.use_modal:
         name_ = name_+'_modal'
+    if args.input_modality != 'full':
+        name_ = name_+'_'+args.input_modality+'_only'
 
     args.cuda = torch.cuda.is_available() and not args.no_cuda
     if args.cuda:
         print('Running on GPU')
     else:
         print('Running on CPU')
+    print('Input modality:', args.input_modality)
 
     if args.tensorboard:
         from tensorboardX import SummaryWriter
@@ -594,7 +649,8 @@ if __name__ == '__main__':
                     model, loss_function, dial_loader, e, cuda, args.modals, dataset=args.Dataset
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
-                dial_meta = save_eval_report(dial_label, dial_pred, args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                dial_prefix = f'dial_epoch{e+1:03d}' if args.input_modality == 'full' else f'dial_{args.input_modality}_epoch{e+1:03d}'
+                dial_meta = save_eval_report(dial_label, dial_pred, args.dial_save_dir, dial_prefix)
                 if dial_meta is not None:
                     all_dial_fscore.append(dial_meta['f1'])
                     if best_dial_fscore is None or dial_meta['f1'] > best_dial_fscore:
@@ -613,7 +669,8 @@ if __name__ == '__main__':
                 )
                 print('dial_epoch: {}, dial_loss: {}, dial_acc: {}, dial_fscore: {}'.format(e + 1, dial_loss, dial_acc, dial_fscore))
                 valid_pos = np.where(np.array(dial_mask) > 0)[0]
-                dial_meta = save_eval_report(np.array(dial_label)[valid_pos], np.array(dial_pred)[valid_pos], args.dial_save_dir, f'dial_epoch{e+1:03d}')
+                dial_prefix = f'dial_epoch{e+1:03d}' if args.input_modality == 'full' else f'dial_{args.input_modality}_epoch{e+1:03d}'
+                dial_meta = save_eval_report(np.array(dial_label)[valid_pos], np.array(dial_pred)[valid_pos], args.dial_save_dir, dial_prefix)
                 if dial_meta is not None:
                     all_dial_fscore.append(dial_meta['f1'])
                     if best_dial_fscore is None or dial_meta['f1'] > best_dial_fscore:

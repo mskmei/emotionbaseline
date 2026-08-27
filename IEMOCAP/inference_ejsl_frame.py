@@ -3,6 +3,7 @@ import csv
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -19,6 +20,16 @@ from model import ASF, Student_Audio, Student_Video, Teacher_model
 IEMOCAP_LABELS = ["ang", "exc", "fru", "hap", "neu", "sad"]
 TARGET_LABELS = ["A", "N", "J", "S"]
 TARGET_TO_ID = {name: idx for idx, name in enumerate(TARGET_LABELS)}
+MODALITY_ALIASES = {
+    "full": "full",
+    "avl": "full",
+    "text": "text",
+    "t": "text",
+    "l": "text",
+    "video": "video",
+    "visual": "video",
+    "v": "video",
+}
 
 
 audio_processor = AutoProcessor.from_pretrained("facebook/data2vec-audio-base-960h")
@@ -74,6 +85,14 @@ def padding_audio(batch: List[torch.Tensor]) -> torch.Tensor:
             x = torch.cat([torch.zeros(pad_len, dtype=x.dtype), x], dim=0)
         padded.append(x)
     return torch.stack(padded, dim=0)
+
+
+def normalize_eval_modality(value: str) -> str:
+    key = (value or "full").strip().lower()
+    if key not in MODALITY_ALIASES:
+        valid = ", ".join(sorted(MODALITY_ALIASES))
+        raise ValueError(f"Unsupported eval_modality={value!r}; valid values: {valid}")
+    return MODALITY_ALIASES[key]
 
 
 def sample_eight_frames(frame_paths: List[Path]) -> List[np.ndarray]:
@@ -238,7 +257,8 @@ class EJSLDataset(Dataset):
         return self.sessions[idx]
 
 
-def make_batchs(sessions):
+def make_batchs(sessions, eval_modality: str = "full"):
+    eval_modality = normalize_eval_modality(eval_modality)
     batch_input = []
     batch_audio = []
     batch_video = []
@@ -260,13 +280,19 @@ def make_batchs(sessions):
         concat_string = input_string.strip() + " </s> " + prompt
         batch_input.append(encode_right_truncated(concat_string, roberta_tokenizer))
 
-        audio_source = last_wav_path if last_wav_path is not None else last_mp4_path
-        audio_input = get_audio_from_file_or_silence(audio_source)
-
-        if last_mp4_path is not None and last_mp4_path.exists():
-            video_input = get_video_from_mp4(last_mp4_path)
+        if eval_modality == "full":
+            audio_source = last_wav_path if last_wav_path is not None else last_mp4_path
+            audio_input = get_audio_from_file_or_silence(audio_source)
         else:
-            video_input = get_video_from_frame_dir(last_frame_dir)
+            audio_input = get_audio_from_file_or_silence(None)
+
+        if eval_modality in {"full", "video"}:
+            if last_mp4_path is not None and last_mp4_path.exists():
+                video_input = get_video_from_mp4(last_mp4_path)
+            else:
+                video_input = get_video_from_frame_dir(last_frame_dir)
+        else:
+            video_input = torch.zeros((8, 3, 224, 224), dtype=torch.float32)
         batch_audio.append(audio_input)
         batch_video.append(video_input)
 
@@ -296,7 +322,8 @@ def map_logits_6_to_probs_4(logits_6: torch.Tensor) -> torch.Tensor:
     return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
 
 
-def evaluation(model_t, audio_s, video_s, fusion, dataloader, device):
+def evaluation(model_t, audio_s, video_s, fusion, dataloader, device, eval_modality: str = "full"):
+    eval_modality = normalize_eval_modality(eval_modality)
     gold_list = []
     pred_list = []
 
@@ -309,11 +336,21 @@ def evaluation(model_t, audio_s, video_s, fusion, dataloader, device):
             video_inputs = video_inputs.to(device)
             batch_labels = batch_labels.to(device)
 
-            text_hidden, _ = model_t(batch_input_tokens, attention_masks)
-            audio_hidden, _ = audio_s(audio_inputs)
-            video_hidden, _ = video_s(video_inputs)
+            if eval_modality == "text":
+                text_hidden, _ = model_t(batch_input_tokens, attention_masks)
+                audio_hidden = torch.zeros_like(text_hidden)
+                video_hidden = torch.zeros_like(text_hidden)
+            elif eval_modality == "video":
+                video_hidden, _ = video_s(video_inputs)
+                text_hidden = torch.zeros_like(video_hidden)
+                audio_hidden = torch.zeros_like(video_hidden)
+            else:
+                text_hidden, _ = model_t(batch_input_tokens, attention_masks)
+                audio_hidden, _ = audio_s(audio_inputs)
+                video_hidden, _ = video_s(video_inputs)
 
             logits_6 = fusion(text_hidden, video_hidden, audio_hidden)
+
             probs_4 = map_logits_6_to_probs_4(logits_6)
             pred_4 = probs_4.argmax(dim=1)
 
@@ -323,7 +360,14 @@ def evaluation(model_t, audio_s, video_s, fusion, dataloader, device):
     return pred_list, gold_list
 
 
-def save_prediction_details(samples: List[Sample], all_golds: List[int], all_preds: List[int], save_dir: Path, prefix: str) -> None:
+def save_prediction_details(
+    samples: List[Sample],
+    all_golds: List[int],
+    all_preds: List[int],
+    save_dir: Path,
+    prefix: str,
+    eval_modality: str,
+) -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
     out_csv = save_dir / f"{prefix}_predictions.csv"
     with open(out_csv, "w", encoding="utf-8", newline="") as f:
@@ -335,6 +379,7 @@ def save_prediction_details(samples: List[Sample], all_golds: List[int], all_pre
                 "dialogue_idx",
                 "utterance_idx",
                 "frame_dir",
+                "eval_modality",
                 "gold_label",
                 "pred_label",
                 "correct",
@@ -348,6 +393,7 @@ def save_prediction_details(samples: List[Sample], all_golds: List[int], all_pre
                     sample.dialogue_idx,
                     sample.utterance_idx,
                     str(sample.frame_dir),
+                    eval_modality,
                     TARGET_LABELS[int(g)],
                     TARGET_LABELS[int(p)],
                     int(int(g) == int(p)),
@@ -414,6 +460,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--save_dir", type=str, default="./IEMOCAP/outputs_ejsl")
     parser.add_argument("--report_prefix", type=str, default="telme_ejsl")
+    parser.add_argument(
+        "--eval_modality",
+        type=str,
+        default="full",
+        help="full/TELME fusion, text-only fusion, or video-only fusion. Non-selected fusion inputs are zeroed.",
+    )
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--save_predictions", action="store_true")
     return parser.parse_args()
@@ -421,6 +473,7 @@ def parse_args():
 
 def main():
     args = parse_args()
+    args.eval_modality = normalize_eval_modality(args.eval_modality)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -475,7 +528,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=make_batchs,
+        collate_fn=partial(make_batchs, eval_modality=args.eval_modality),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -486,20 +539,32 @@ def main():
     video_model = "facebook/timesformer-base-finetuned-k400"
     cls_num = len(IEMOCAP_LABELS)
 
-    model_t = Teacher_model(text_model, cls_num)
-    teacher_sd = load_state_dict_compat(Path(args.save_model_root) / "teacher.bin", device)
-    model_t.load_state_dict(teacher_sd, strict=False)
-    model_t = model_t.to(device).eval()
+    need_text = args.eval_modality in {"full", "text"}
+    need_audio = args.eval_modality == "full"
+    need_video = args.eval_modality in {"full", "video"}
 
-    audio_s = Student_Audio(audio_model, cls_num, Config())
-    audio_sd = load_state_dict_compat(Path(args.save_model_root) / "student_audio" / "total_student.bin", device)
-    audio_s.load_state_dict(audio_sd, strict=True)
-    audio_s = audio_s.to(device).eval()
+    model_t = None
+    audio_s = None
+    video_s = None
+    fusion = None
 
-    video_s = Student_Video(video_model, cls_num)
-    video_sd = load_state_dict_compat(Path(args.save_model_root) / "student_video" / "total_student.bin", device)
-    video_s.load_state_dict(video_sd, strict=True)
-    video_s = video_s.to(device).eval()
+    if need_text:
+        model_t = Teacher_model(text_model, cls_num)
+        teacher_sd = load_state_dict_compat(Path(args.save_model_root) / "teacher.bin", device)
+        model_t.load_state_dict(teacher_sd, strict=False)
+        model_t = model_t.to(device).eval()
+
+    if need_audio:
+        audio_s = Student_Audio(audio_model, cls_num, Config())
+        audio_sd = load_state_dict_compat(Path(args.save_model_root) / "student_audio" / "total_student.bin", device)
+        audio_s.load_state_dict(audio_sd, strict=True)
+        audio_s = audio_s.to(device).eval()
+
+    if need_video:
+        video_s = Student_Video(video_model, cls_num)
+        video_sd = load_state_dict_compat(Path(args.save_model_root) / "student_video" / "total_student.bin", device)
+        video_s.load_state_dict(video_sd, strict=True)
+        video_s = video_s.to(device).eval()
 
     hidden_size, beta_shift, dropout_prob, num_head = 768, 2e-1, 0.2, 4
     fusion = ASF(cls_num, hidden_size, beta_shift, dropout_prob, num_head)
@@ -507,8 +572,9 @@ def main():
     fusion.load_state_dict(fusion_sd, strict=True)
     fusion = fusion.to(device).eval()
 
+    print(f"[Eval] modality={args.eval_modality}")
     with torch.no_grad():
-        preds, golds = evaluation(model_t, audio_s, video_s, fusion, test_loader, device)
+        preds, golds = evaluation(model_t, audio_s, video_s, fusion, test_loader, device, args.eval_modality)
 
     if len(valid_samples) != len(golds):
         raise RuntimeError(f"Prediction count mismatch: samples={len(valid_samples)} vs golds={len(golds)}")
@@ -526,7 +592,7 @@ def main():
 
     save_reports(golds, preds, Path(args.save_dir), args.report_prefix)
     if args.save_predictions:
-        save_prediction_details(valid_samples, golds, preds, Path(args.save_dir), args.report_prefix)
+        save_prediction_details(valid_samples, golds, preds, Path(args.save_dir), args.report_prefix, args.eval_modality)
 
 
 if __name__ == "__main__":
