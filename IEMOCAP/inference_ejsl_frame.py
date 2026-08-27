@@ -1,5 +1,7 @@
 import argparse
 import csv
+import io
+import math
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -178,18 +180,103 @@ def get_audio_from_file_or_silence(wav_path: Optional[Path], silence_seconds: fl
     return inputs["input_values"][0]
 
 
+def audio_array_to_float32_mono(audio) -> np.ndarray:
+    arr = np.asarray(audio)
+    if arr.ndim > 1:
+        channel_axis = 0 if arr.shape[0] <= 8 and arr.shape[-1] > arr.shape[0] else -1
+        arr = arr.mean(axis=channel_axis)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        info = np.iinfo(arr.dtype)
+        scale = max(abs(float(info.min)), abs(float(info.max)), 1.0)
+        arr = arr.astype(np.float32) / scale
+    else:
+        arr = arr.astype(np.float32)
+
+    return np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def resample_audio_to_16k(audio: np.ndarray, sampling_rate: int) -> np.ndarray:
+    if int(sampling_rate) <= 0:
+        return audio.astype(np.float32)
+    if int(sampling_rate) == 16000:
+        return audio.astype(np.float32)
+
+    try:
+        import librosa
+
+        return librosa.resample(audio.astype(np.float32), orig_sr=int(sampling_rate), target_sr=16000).astype(np.float32)
+    except Exception:
+        pass
+
+    try:
+        from scipy.signal import resample_poly
+
+        divisor = math.gcd(int(sampling_rate), 16000)
+        return resample_poly(audio.astype(np.float32), 16000 // divisor, int(sampling_rate) // divisor).astype(np.float32)
+    except Exception:
+        pass
+
+    old_x = np.linspace(0.0, 1.0, num=max(len(audio), 1), endpoint=False)
+    new_len = max(int(round(len(audio) * 16000 / float(sampling_rate))), 1)
+    new_x = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+    return np.interp(new_x, old_x, audio.astype(np.float32)).astype(np.float32)
+
+
+def audio_array_to_input_values(audio, sampling_rate: int) -> Optional[torch.Tensor]:
+    arr = audio_array_to_float32_mono(audio)
+    if arr.size == 0:
+        return None
+    arr = resample_audio_to_16k(arr, int(sampling_rate))
+    if arr.size == 0:
+        return None
+    inputs = audio_processor(arr, sampling_rate=16000, return_tensors="pt")
+    return inputs["input_values"][0]
+
+
+def audio_bytes_to_input_values(audio_bytes: bytes) -> Optional[torch.Tensor]:
+    if not audio_bytes:
+        return None
+
+    try:
+        from scipy.io import wavfile
+
+        sampling_rate, audio = wavfile.read(io.BytesIO(audio_bytes))
+        return audio_array_to_input_values(audio, int(sampling_rate))
+    except Exception:
+        pass
+
+    try:
+        import soundfile as sf
+
+        audio, sampling_rate = sf.read(io.BytesIO(audio_bytes), always_2d=False)
+        return audio_array_to_input_values(audio, int(sampling_rate))
+    except Exception:
+        return None
+
+
 def load_audio_from_file(wav_path: Path) -> Optional[torch.Tensor]:
     if not wav_path.exists() or not wav_path.is_file():
         return None
 
-    import librosa
-
     try:
+        import librosa
+
         audio, _ = librosa.load(str(wav_path), sr=16000)
+        return audio_array_to_input_values(audio, 16000)
     except Exception:
-        return None
-    inputs = audio_processor(audio, sampling_rate=16000, return_tensors="pt")
-    return inputs["input_values"][0]
+        pass
+
+    if wav_path.suffix.lower() == ".wav":
+        try:
+            from scipy.io import wavfile
+
+            sampling_rate, audio = wavfile.read(str(wav_path))
+            return audio_array_to_input_values(audio, int(sampling_rate))
+        except Exception:
+            return None
+
+    return None
 
 
 def resolve_csv_media_path(csv_path: Path, raw_path: str) -> Path:
@@ -292,6 +379,103 @@ def compute_audio_hidden_stats(
     return mean, std, count
 
 
+def hf_example_to_audio_input(example: Dict) -> Optional[torch.Tensor]:
+    audio = example.get("audio")
+    if isinstance(audio, dict):
+        if audio.get("array") is not None:
+            sampling_rate = int(audio.get("sampling_rate") or 16000)
+            return audio_array_to_input_values(audio["array"], sampling_rate)
+        if audio.get("bytes") is not None:
+            return audio_bytes_to_input_values(audio["bytes"])
+        if audio.get("path"):
+            path = Path(str(audio["path"]))
+            if path.exists():
+                return load_audio_from_file(path)
+
+    for value in example.values():
+        if isinstance(value, dict) and value.get("bytes") is not None:
+            return audio_bytes_to_input_values(value["bytes"])
+        if isinstance(value, dict) and value.get("array") is not None:
+            sampling_rate = int(value.get("sampling_rate") or 16000)
+            return audio_array_to_input_values(value["array"], sampling_rate)
+
+    return None
+
+
+def compute_audio_hidden_stats_from_hf(
+    audio_s,
+    dataset_name: str,
+    split: str,
+    device: torch.device,
+    batch_size: int,
+    max_samples: int,
+    save_path: Optional[Path] = None,
+    cache_dir: str = "",
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    try:
+        from datasets import Audio, load_dataset
+    except Exception as exc:
+        raise RuntimeError("Hugging Face fallback requires the 'datasets' package") from exc
+
+    kwargs = {"split": split, "streaming": True}
+    if cache_dir:
+        kwargs["cache_dir"] = cache_dir
+
+    print(f"[AudioStats] loading Hugging Face dataset {dataset_name} split={split}")
+    dataset = load_dataset(dataset_name, **kwargs)
+    try:
+        dataset = dataset.cast_column("audio", Audio(decode=False))
+    except Exception:
+        pass
+
+    hidden_chunks = []
+    batch = []
+    count = 0
+    with torch.no_grad():
+        for example in dataset:
+            audio_input = hf_example_to_audio_input(example)
+            if audio_input is None:
+                continue
+            batch.append(audio_input)
+            count += 1
+
+            if len(batch) >= batch_size:
+                audios = padding_audio(batch).to(device)
+                audio_hidden, _ = audio_s(audios)
+                hidden_chunks.append(audio_hidden.detach().cpu())
+                batch = []
+                if count % 100 == 0:
+                    print(f"[AudioStats] encoded HF audio samples={count}")
+
+            if max_samples > 0 and count >= max_samples:
+                break
+
+        if batch:
+            audios = padding_audio(batch).to(device)
+            audio_hidden, _ = audio_s(audios)
+            hidden_chunks.append(audio_hidden.detach().cpu())
+
+    if not hidden_chunks:
+        raise RuntimeError(f"No audio hidden vectors could be computed from Hugging Face dataset: {dataset_name}")
+
+    hidden = torch.cat(hidden_chunks, dim=0)
+    mean = hidden.mean(dim=0).to(device)
+    std = hidden.std(dim=0, unbiased=False).clamp_min(1e-6).to(device)
+    count = int(hidden.shape[0])
+
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            save_path,
+            mean=mean.detach().cpu().numpy().astype(np.float32),
+            std=std.detach().cpu().numpy().astype(np.float32),
+            count=np.array(count, dtype=np.int64),
+        )
+        print(f"[AudioStats] saved mean/std/count={count}: {save_path}")
+
+    return mean, std, count
+
+
 def get_or_build_audio_hidden_stats(args, audio_s, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, int]:
     stats_path = Path(args.audio_stats_path) if args.audio_stats_path else None
     if stats_path is not None and stats_path.exists():
@@ -299,17 +483,36 @@ def get_or_build_audio_hidden_stats(args, audio_s, device: torch.device) -> Tupl
         print(f"[AudioStats] loaded count={count}: {stats_path}")
         return mean, std, count
 
-    if not args.audio_stats_source_csv:
-        raise RuntimeError("source_mean imputation requires --audio_stats_path or --audio_stats_source_csv")
+    source_csv_error = None
+    if args.audio_stats_source_csv:
+        try:
+            return compute_audio_hidden_stats(
+                audio_s=audio_s,
+                source_csv=Path(args.audio_stats_source_csv),
+                device=device,
+                batch_size=max(int(args.batch_size), 1),
+                max_samples=int(args.audio_stats_max_samples),
+                save_path=stats_path,
+            )
+        except (FileNotFoundError, RuntimeError) as exc:
+            source_csv_error = exc
+            print(f"[AudioStats] local source csv unavailable: {exc}")
 
-    return compute_audio_hidden_stats(
-        audio_s=audio_s,
-        source_csv=Path(args.audio_stats_source_csv),
-        device=device,
-        batch_size=max(int(args.batch_size), 1),
-        max_samples=int(args.audio_stats_max_samples),
-        save_path=stats_path,
-    )
+    if not args.disable_audio_stats_hf and args.audio_stats_hf_dataset:
+        return compute_audio_hidden_stats_from_hf(
+            audio_s=audio_s,
+            dataset_name=args.audio_stats_hf_dataset,
+            split=args.audio_stats_hf_split,
+            device=device,
+            batch_size=max(int(args.batch_size), 1),
+            max_samples=int(args.audio_stats_max_samples),
+            save_path=stats_path,
+            cache_dir=args.audio_stats_hf_cache_dir,
+        )
+
+    if source_csv_error is not None:
+        raise source_csv_error
+    raise RuntimeError("source_mean imputation requires --audio_stats_path, source wav CSV, or Hugging Face fallback")
 
 
 def make_imputed_audio_hidden(
@@ -680,6 +883,29 @@ def parse_args():
         type=int,
         default=512,
         help="Maximum source wavs used to estimate audio hidden mean/std; 0 means all available wavs.",
+    )
+    parser.add_argument(
+        "--audio_stats_hf_dataset",
+        type=str,
+        default="AbstractTTS/IEMOCAP",
+        help="Hugging Face dataset fallback used to compute TELME audio hidden mean when source wav files are unavailable.",
+    )
+    parser.add_argument(
+        "--audio_stats_hf_split",
+        type=str,
+        default="train",
+        help="Split of --audio_stats_hf_dataset used for source_mean stats.",
+    )
+    parser.add_argument(
+        "--audio_stats_hf_cache_dir",
+        type=str,
+        default="",
+        help="Optional Hugging Face datasets cache directory.",
+    )
+    parser.add_argument(
+        "--disable_audio_stats_hf",
+        action="store_true",
+        help="Disable Hugging Face fallback for source_mean audio stats.",
     )
     parser.add_argument("--audio_noise_scale", type=float, default=1.0)
     parser.add_argument("--max_samples", type=int, default=0)

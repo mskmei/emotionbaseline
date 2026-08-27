@@ -15,6 +15,9 @@ AUDIO_STRATEGIES=${AUDIO_STRATEGIES:-"source_mean pure_noise"}
 AUDIO_STATS_PATH=${AUDIO_STATS_PATH:-"$SAVE_DIR/iemocap_audio_hidden_stats.npz"}
 AUDIO_STATS_SOURCE_CSV=${AUDIO_STATS_SOURCE_CSV:-./dataset/IEMOCAP_full_release/IEMOCAP_train.csv}
 AUDIO_STATS_MAX_SAMPLES=${AUDIO_STATS_MAX_SAMPLES:-512}
+AUDIO_STATS_HF_DATASET=${AUDIO_STATS_HF_DATASET:-AbstractTTS/IEMOCAP}
+AUDIO_STATS_HF_SPLIT=${AUDIO_STATS_HF_SPLIT:-train}
+AUDIO_STATS_HF_CACHE_DIR=${AUDIO_STATS_HF_CACHE_DIR:-}
 AUDIO_NOISE_SCALE=${AUDIO_NOISE_SCALE:-1.0}
 
 mkdir -p "$SAVE_DIR"
@@ -36,6 +39,9 @@ for STRATEGY in $AUDIO_STRATEGIES; do
     --audio_stats_path "$AUDIO_STATS_PATH" \
     --audio_stats_source_csv "$AUDIO_STATS_SOURCE_CSV" \
     --audio_stats_max_samples "$AUDIO_STATS_MAX_SAMPLES" \
+    --audio_stats_hf_dataset "$AUDIO_STATS_HF_DATASET" \
+    --audio_stats_hf_split "$AUDIO_STATS_HF_SPLIT" \
+    --audio_stats_hf_cache_dir "$AUDIO_STATS_HF_CACHE_DIR" \
     --audio_noise_scale "$AUDIO_NOISE_SCALE" \
     --save_predictions | tee "$LOG_PATH"
 done
