@@ -9,6 +9,27 @@ import cv2
 import numpy as np
 
 
+MISSING_AUDIO_ALIASES = {
+    "extract": "extract",
+    "raw": "extract",
+    "silence": "zero",
+    "zero": "zero",
+    "zero_feature": "zero",
+    "noise": "pure_noise",
+    "pure_noise": "pure_noise",
+    "mean": "source_mean",
+    "source_mean": "source_mean",
+}
+
+
+def normalize_missing_audio_strategy(value: str) -> str:
+    key = (value or "extract").strip().lower()
+    if key not in MISSING_AUDIO_ALIASES:
+        valid = ", ".join(sorted(MISSING_AUDIO_ALIASES))
+        raise ValueError(f"Unsupported missing_audio_strategy={value!r}; valid values: {valid}")
+    return MISSING_AUDIO_ALIASES[key]
+
+
 def read_names(path: Path):
     lines = [x.strip() for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
     if not lines:
@@ -192,6 +213,18 @@ def match_stats(x, x_mean, x_std, src_mean, src_std):
     return z * src_std + src_mean
 
 
+def impute_audio_feature(strategy: str, dim: int, source_stats, rng, noise_scale: float):
+    if strategy == "zero":
+        return np.zeros(dim, dtype=np.float32)
+    if strategy == "pure_noise":
+        return (rng.standard_normal(dim) * float(noise_scale)).astype(np.float32)
+    if source_stats is None:
+        raise RuntimeError(f"missing_audio_strategy={strategy} requires source stats")
+    if strategy == "source_mean":
+        return source_stats["audio_mean"].astype(np.float32)
+    raise ValueError(f"Unsupported audio imputation strategy: {strategy}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Build MMGCN external DIAL test pkl directly from txt+frame")
     parser.add_argument("--dial_list", type=str, required=True, help="CSV/TXT with DIAL sample names")
@@ -201,8 +234,18 @@ def main():
     parser.add_argument("--dataset", type=str, default="IEMOCAP", choices=["IEMOCAP", "MELD"])
     parser.add_argument("--source_pkl", type=str, default="", help="Source feature pkl for mean/std alignment")
     parser.add_argument("--disable_source_align", action="store_true", help="Disable source-domain stats alignment")
+    parser.add_argument(
+        "--missing_audio_strategy",
+        type=str,
+        default="extract",
+        help="extract keeps old mp4 audio extraction; zero, pure_noise/noise, or source_mean/mean impute missing audio feature after source alignment.",
+    )
+    parser.add_argument("--audio_noise_scale", type=float, default=1.0)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out_pkl", type=str, required=True)
     args = parser.parse_args()
+    args.missing_audio_strategy = normalize_missing_audio_strategy(args.missing_audio_strategy)
+    rng = np.random.default_rng(args.seed)
 
     if args.dataset.upper() == "IEMOCAP":
         d_text, d_audio = 100, 1582
@@ -221,6 +264,8 @@ def main():
     source_stats = None
     if not args.disable_source_align:
         source_stats = load_source_stats(source_pkl)
+    if args.missing_audio_strategy == "source_mean" and source_stats is None:
+        raise RuntimeError("--missing_audio_strategy source_mean requires source stats; do not use --disable_source_align")
 
     videoIDs = {}
     videoSpeakers = {}
@@ -272,7 +317,11 @@ def main():
         merged_text = ' '.join([t[1] for t in turns_ctx])
         text_seq = hash_text_vec(merged_text, d_text).reshape(1, -1)
         visual_seq = build_single_visual(frame_dir).reshape(1, -1)
-        audio_vec, audio_status = extract_audio_feature_from_mp4(mp4_file, d_audio)
+        if args.missing_audio_strategy == "extract":
+            audio_vec, audio_status = extract_audio_feature_from_mp4(mp4_file, d_audio)
+        else:
+            audio_vec = np.zeros(d_audio, dtype=np.float32)
+            audio_status = f"impute_{args.missing_audio_strategy}"
         if audio_status not in audio_stats:
             audio_stats[audio_status] = 0
         audio_stats[audio_status] += 1
@@ -312,16 +361,34 @@ def main():
 
         for stem in testVid:
             tx = videoText[stem][0]
-            ax = videoAudio[stem][0]
             vx = videoVisual[stem][0]
 
             tx2 = match_stats(tx, t_mean, t_std, source_stats['text_mean'], source_stats['text_std']).astype(np.float32)
-            ax2 = match_stats(ax, a_mean, a_std, source_stats['audio_mean'], source_stats['audio_std']).astype(np.float32)
             vx2 = match_stats(vx, v_mean, v_std, source_stats['visual_mean'], source_stats['visual_std']).astype(np.float32)
+            if args.missing_audio_strategy == "extract":
+                ax = videoAudio[stem][0]
+                ax2 = match_stats(ax, a_mean, a_std, source_stats['audio_mean'], source_stats['audio_std']).astype(np.float32)
+            else:
+                ax2 = impute_audio_feature(
+                    args.missing_audio_strategy,
+                    d_audio,
+                    source_stats,
+                    rng,
+                    args.audio_noise_scale,
+                )
 
             videoText[stem] = tx2.reshape(1, -1)
             videoAudio[stem] = ax2.reshape(1, -1)
             videoVisual[stem] = vx2.reshape(1, -1)
+    elif args.missing_audio_strategy != "extract":
+        for stem in testVid:
+            videoAudio[stem] = impute_audio_feature(
+                args.missing_audio_strategy,
+                d_audio,
+                source_stats,
+                rng,
+                args.audio_noise_scale,
+            ).reshape(1, -1)
 
     # Keep tuple format compatible with IEMOCAP loader implementation.
     payload = (
@@ -341,7 +408,10 @@ def main():
     with open(out, "wb") as f:
         pickle.dump(payload, f)
 
-    print(f"[Build] dataset={args.dataset} total={len(names)} kept={kept} dropped={dropped}")
+    print(
+        f"[Build] dataset={args.dataset} total={len(names)} kept={kept} dropped={dropped} "
+        f"missing_audio_strategy={args.missing_audio_strategy}"
+    )
     print(
         "[Build] audio_status "
         + " ".join([f"{k}={v}" for k, v in audio_stats.items()])

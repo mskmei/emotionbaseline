@@ -30,6 +30,17 @@ MODALITY_ALIASES = {
     "visual": "video",
     "v": "video",
 }
+MISSING_AUDIO_ALIASES = {
+    "silence": "silence",
+    "zero_waveform": "silence",
+    "old_zero": "silence",
+    "zero": "silence",
+    "zero_hidden": "zero_hidden",
+    "noise": "pure_noise",
+    "pure_noise": "pure_noise",
+    "mean": "source_mean",
+    "source_mean": "source_mean",
+}
 
 
 audio_processor = AutoProcessor.from_pretrained("facebook/data2vec-audio-base-960h")
@@ -95,6 +106,14 @@ def normalize_eval_modality(value: str) -> str:
     return MODALITY_ALIASES[key]
 
 
+def normalize_missing_audio_strategy(value: str) -> str:
+    key = (value or "silence").strip().lower()
+    if key not in MISSING_AUDIO_ALIASES:
+        valid = ", ".join(sorted(MISSING_AUDIO_ALIASES))
+        raise ValueError(f"Unsupported missing_audio_strategy={value!r}; valid values: {valid}")
+    return MISSING_AUDIO_ALIASES[key]
+
+
 def sample_eight_frames(frame_paths: List[Path]) -> List[np.ndarray]:
     if not frame_paths:
         raise ValueError("empty frame folder")
@@ -157,6 +176,158 @@ def get_audio_from_file_or_silence(wav_path: Optional[Path], silence_seconds: fl
 
     inputs = audio_processor(audio, sampling_rate=16000, return_tensors="pt")
     return inputs["input_values"][0]
+
+
+def load_audio_from_file(wav_path: Path) -> Optional[torch.Tensor]:
+    if not wav_path.exists() or not wav_path.is_file():
+        return None
+
+    import librosa
+
+    try:
+        audio, _ = librosa.load(str(wav_path), sr=16000)
+    except Exception:
+        return None
+    inputs = audio_processor(audio, sampling_rate=16000, return_tensors="pt")
+    return inputs["input_values"][0]
+
+
+def resolve_csv_media_path(csv_path: Path, raw_path: str) -> Path:
+    p = Path(str(raw_path).strip())
+    if p.is_absolute():
+        return p
+    cwd_candidate = (Path.cwd() / p).resolve()
+    if cwd_candidate.exists():
+        return cwd_candidate
+    return (csv_path.parent / p).resolve()
+
+
+def load_audio_hidden_stats(stats_path: Path, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    if not stats_path.exists():
+        raise FileNotFoundError(f"audio stats file not found: {stats_path}")
+
+    data = np.load(stats_path)
+    if isinstance(data, np.lib.npyio.NpzFile):
+        mean = data["mean"].astype(np.float32)
+        std = data["std"].astype(np.float32) if "std" in data.files else np.ones_like(mean, dtype=np.float32)
+        count = int(data["count"]) if "count" in data.files else -1
+    else:
+        mean = np.asarray(data, dtype=np.float32)
+        std = np.ones_like(mean, dtype=np.float32)
+        count = -1
+
+    return torch.from_numpy(mean).to(device), torch.from_numpy(std).to(device), count
+
+
+def collect_audio_paths_from_iemocap_csv(csv_path: Path, max_samples: int = 0) -> List[Path]:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"audio stats source csv not found: {csv_path}")
+
+    paths = []
+    with open(csv_path, "r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            raw_path = row.get("Wav_Path", "")
+            if not raw_path:
+                continue
+            p = resolve_csv_media_path(csv_path, raw_path)
+            if p.exists() and p.is_file():
+                paths.append(p)
+            if max_samples > 0 and len(paths) >= max_samples:
+                break
+    return paths
+
+
+def compute_audio_hidden_stats(
+    audio_s,
+    source_csv: Path,
+    device: torch.device,
+    batch_size: int,
+    max_samples: int,
+    save_path: Optional[Path] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    audio_paths = collect_audio_paths_from_iemocap_csv(source_csv, max_samples=max_samples)
+    if not audio_paths:
+        raise RuntimeError(
+            "No usable source wav files found for audio mean/std. "
+            f"Check --audio_stats_source_csv or provide --audio_stats_path: {source_csv}"
+        )
+
+    hidden_chunks = []
+    batch = []
+    with torch.no_grad():
+        for p in audio_paths:
+            audio_input = load_audio_from_file(p)
+            if audio_input is None:
+                continue
+            batch.append(audio_input)
+            if len(batch) >= batch_size:
+                audios = padding_audio(batch).to(device)
+                audio_hidden, _ = audio_s(audios)
+                hidden_chunks.append(audio_hidden.detach().cpu())
+                batch = []
+        if batch:
+            audios = padding_audio(batch).to(device)
+            audio_hidden, _ = audio_s(audios)
+            hidden_chunks.append(audio_hidden.detach().cpu())
+
+    if not hidden_chunks:
+        raise RuntimeError(f"No audio hidden vectors could be computed from: {source_csv}")
+
+    hidden = torch.cat(hidden_chunks, dim=0)
+    mean = hidden.mean(dim=0).to(device)
+    std = hidden.std(dim=0, unbiased=False).clamp_min(1e-6).to(device)
+    count = int(hidden.shape[0])
+
+    if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            save_path,
+            mean=mean.detach().cpu().numpy().astype(np.float32),
+            std=std.detach().cpu().numpy().astype(np.float32),
+            count=np.array(count, dtype=np.int64),
+        )
+        print(f"[AudioStats] saved mean/std/count={count}: {save_path}")
+
+    return mean, std, count
+
+
+def get_or_build_audio_hidden_stats(args, audio_s, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor, int]:
+    stats_path = Path(args.audio_stats_path) if args.audio_stats_path else None
+    if stats_path is not None and stats_path.exists():
+        mean, std, count = load_audio_hidden_stats(stats_path, device)
+        print(f"[AudioStats] loaded count={count}: {stats_path}")
+        return mean, std, count
+
+    if not args.audio_stats_source_csv:
+        raise RuntimeError("source_mean imputation requires --audio_stats_path or --audio_stats_source_csv")
+
+    return compute_audio_hidden_stats(
+        audio_s=audio_s,
+        source_csv=Path(args.audio_stats_source_csv),
+        device=device,
+        batch_size=max(int(args.batch_size), 1),
+        max_samples=int(args.audio_stats_max_samples),
+        save_path=stats_path,
+    )
+
+
+def make_imputed_audio_hidden(
+    reference_hidden: torch.Tensor,
+    strategy: str,
+    mean: Optional[torch.Tensor],
+    std: Optional[torch.Tensor],
+    noise_scale: float,
+) -> torch.Tensor:
+    if strategy == "zero_hidden":
+        return torch.zeros_like(reference_hidden)
+    if strategy == "pure_noise":
+        return torch.randn_like(reference_hidden) * float(noise_scale)
+    if strategy == "source_mean":
+        if mean is None:
+            raise RuntimeError("source_mean audio imputation requires source audio hidden mean stats")
+        return mean.to(reference_hidden.device, dtype=reference_hidden.dtype).view(1, -1).expand_as(reference_hidden)
+    raise ValueError(f"Unsupported hidden audio imputation strategy: {strategy}")
 
 
 def parse_sample_id(name: str) -> Optional[Sample]:
@@ -257,8 +428,9 @@ class EJSLDataset(Dataset):
         return self.sessions[idx]
 
 
-def make_batchs(sessions, eval_modality: str = "full"):
+def make_batchs(sessions, eval_modality: str = "full", missing_audio_strategy: str = "silence"):
     eval_modality = normalize_eval_modality(eval_modality)
+    missing_audio_strategy = normalize_missing_audio_strategy(missing_audio_strategy)
     batch_input = []
     batch_audio = []
     batch_video = []
@@ -280,7 +452,7 @@ def make_batchs(sessions, eval_modality: str = "full"):
         concat_string = input_string.strip() + " </s> " + prompt
         batch_input.append(encode_right_truncated(concat_string, roberta_tokenizer))
 
-        if eval_modality == "full":
+        if eval_modality == "full" and missing_audio_strategy == "silence":
             audio_source = last_wav_path if last_wav_path is not None else last_mp4_path
             audio_input = get_audio_from_file_or_silence(audio_source)
         else:
@@ -322,8 +494,21 @@ def map_logits_6_to_probs_4(logits_6: torch.Tensor) -> torch.Tensor:
     return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
 
 
-def evaluation(model_t, audio_s, video_s, fusion, dataloader, device, eval_modality: str = "full"):
+def evaluation(
+    model_t,
+    audio_s,
+    video_s,
+    fusion,
+    dataloader,
+    device,
+    eval_modality: str = "full",
+    missing_audio_strategy: str = "silence",
+    audio_mean: Optional[torch.Tensor] = None,
+    audio_std: Optional[torch.Tensor] = None,
+    audio_noise_scale: float = 1.0,
+):
     eval_modality = normalize_eval_modality(eval_modality)
+    missing_audio_strategy = normalize_missing_audio_strategy(missing_audio_strategy)
     gold_list = []
     pred_list = []
 
@@ -346,8 +531,17 @@ def evaluation(model_t, audio_s, video_s, fusion, dataloader, device, eval_modal
                 audio_hidden = torch.zeros_like(video_hidden)
             else:
                 text_hidden, _ = model_t(batch_input_tokens, attention_masks)
-                audio_hidden, _ = audio_s(audio_inputs)
                 video_hidden, _ = video_s(video_inputs)
+                if missing_audio_strategy == "silence":
+                    audio_hidden, _ = audio_s(audio_inputs)
+                else:
+                    audio_hidden = make_imputed_audio_hidden(
+                        text_hidden,
+                        missing_audio_strategy,
+                        audio_mean,
+                        audio_std,
+                        audio_noise_scale,
+                    )
 
             logits_6 = fusion(text_hidden, video_hidden, audio_hidden)
 
@@ -366,7 +560,6 @@ def save_prediction_details(
     all_preds: List[int],
     save_dir: Path,
     prefix: str,
-    eval_modality: str,
 ) -> None:
     save_dir.mkdir(parents=True, exist_ok=True)
     out_csv = save_dir / f"{prefix}_predictions.csv"
@@ -379,7 +572,6 @@ def save_prediction_details(
                 "dialogue_idx",
                 "utterance_idx",
                 "frame_dir",
-                "eval_modality",
                 "gold_label",
                 "pred_label",
                 "correct",
@@ -393,7 +585,6 @@ def save_prediction_details(
                     sample.dialogue_idx,
                     sample.utterance_idx,
                     str(sample.frame_dir),
-                    eval_modality,
                     TARGET_LABELS[int(g)],
                     TARGET_LABELS[int(p)],
                     int(int(g) == int(p)),
@@ -466,6 +657,31 @@ def parse_args():
         default="full",
         help="full/TELME fusion, text-only fusion, or video-only fusion. Non-selected fusion inputs are zeroed.",
     )
+    parser.add_argument(
+        "--missing_audio_strategy",
+        type=str,
+        default="silence",
+        help="For full fusion on datasets without audio: silence/zero/old zero waveform, zero_hidden, pure_noise/noise, or source_mean/mean.",
+    )
+    parser.add_argument(
+        "--audio_stats_path",
+        type=str,
+        default="",
+        help="Optional .npz/.npy with source audio hidden mean/std for source_mean imputation.",
+    )
+    parser.add_argument(
+        "--audio_stats_source_csv",
+        type=str,
+        default="./dataset/IEMOCAP_full_release/IEMOCAP_train.csv",
+        help="IEMOCAP-style CSV used to compute audio hidden mean/std if --audio_stats_path is missing.",
+    )
+    parser.add_argument(
+        "--audio_stats_max_samples",
+        type=int,
+        default=512,
+        help="Maximum source wavs used to estimate audio hidden mean/std; 0 means all available wavs.",
+    )
+    parser.add_argument("--audio_noise_scale", type=float, default=1.0)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--save_predictions", action="store_true")
     return parser.parse_args()
@@ -474,6 +690,7 @@ def parse_args():
 def main():
     args = parse_args()
     args.eval_modality = normalize_eval_modality(args.eval_modality)
+    args.missing_audio_strategy = normalize_missing_audio_strategy(args.missing_audio_strategy)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
@@ -528,7 +745,11 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=partial(make_batchs, eval_modality=args.eval_modality),
+        collate_fn=partial(
+            make_batchs,
+            eval_modality=args.eval_modality,
+            missing_audio_strategy=args.missing_audio_strategy,
+        ),
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -572,9 +793,31 @@ def main():
     fusion.load_state_dict(fusion_sd, strict=True)
     fusion = fusion.to(device).eval()
 
-    print(f"[Eval] modality={args.eval_modality}")
+    audio_mean = None
+    audio_std = None
+    audio_stats_count = 0
+    if args.eval_modality == "full" and args.missing_audio_strategy == "source_mean":
+        audio_mean, audio_std, audio_stats_count = get_or_build_audio_hidden_stats(args, audio_s, device)
+
+    print(
+        f"[Eval] modality={args.eval_modality} "
+        f"missing_audio_strategy={args.missing_audio_strategy} "
+        f"audio_stats_count={audio_stats_count}"
+    )
     with torch.no_grad():
-        preds, golds = evaluation(model_t, audio_s, video_s, fusion, test_loader, device, args.eval_modality)
+        preds, golds = evaluation(
+            model_t,
+            audio_s,
+            video_s,
+            fusion,
+            test_loader,
+            device,
+            args.eval_modality,
+            args.missing_audio_strategy,
+            audio_mean,
+            audio_std,
+            args.audio_noise_scale,
+        )
 
     if len(valid_samples) != len(golds):
         raise RuntimeError(f"Prediction count mismatch: samples={len(valid_samples)} vs golds={len(golds)}")
@@ -592,7 +835,13 @@ def main():
 
     save_reports(golds, preds, Path(args.save_dir), args.report_prefix)
     if args.save_predictions:
-        save_prediction_details(valid_samples, golds, preds, Path(args.save_dir), args.report_prefix, args.eval_modality)
+        save_prediction_details(
+            valid_samples,
+            golds,
+            preds,
+            Path(args.save_dir),
+            args.report_prefix,
+        )
 
 
 if __name__ == "__main__":
