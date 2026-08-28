@@ -122,12 +122,12 @@ class ASF(nn.Module):
         em_norm = text_embedding.norm(2, dim=-1)
         hm_norm = h_m.norm(2, dim=-1)
 
-        hm_norm_ones = torch.ones(hm_norm.shape, requires_grad=True).cuda()
+        hm_norm_ones = torch.ones(hm_norm.shape, requires_grad=True, device=hm_norm.device)
         hm_norm = torch.where(hm_norm == 0, hm_norm_ones, hm_norm)
 
         thresh_hold = (em_norm / (hm_norm + eps)) * self.beta_shift
 
-        ones = torch.ones(thresh_hold.shape, requires_grad=True).cuda()
+        ones = torch.ones(thresh_hold.shape, requires_grad=True, device=thresh_hold.device)
 
         alpha = torch.min(thresh_hold, ones)
         alpha = alpha.unsqueeze(dim=-1)

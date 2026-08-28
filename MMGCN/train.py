@@ -37,6 +37,11 @@ MODALITY_ALIASES = {
     'video': 'video',
     'visual': 'video',
     'v': 'video',
+    'tv': 'tv',
+    'vt': 'tv',
+    'vl': 'tv',
+    'text_video': 'tv',
+    'video_text': 'tv',
     'audio': 'audio',
     'a': 'audio',
 }
@@ -55,6 +60,8 @@ def zero_unused_modalities(textf, visuf, acouf, input_modality):
         return textf, torch.zeros_like(visuf), torch.zeros_like(acouf)
     if input_modality == 'video':
         return torch.zeros_like(textf), visuf, torch.zeros_like(acouf)
+    if input_modality == 'tv':
+        return textf, visuf, torch.zeros_like(acouf)
     if input_modality == 'audio':
         return torch.zeros_like(textf), torch.zeros_like(visuf), acouf
     return textf, visuf, acouf
@@ -437,7 +444,7 @@ if __name__ == '__main__':
         '--input_modality',
         type=str,
         default='full',
-        help='full, text/t/l, video/v/visual, or audio/a. Non-selected modality feature tensors are zeroed before the model.',
+        help='full, text/t/l, video/v/visual, tv/text_video, or audio/a. Non-selected modality feature tensors are zeroed before the model.',
     )
 
     args = parser.parse_args()

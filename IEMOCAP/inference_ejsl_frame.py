@@ -20,6 +20,7 @@ from model import ASF, Student_Audio, Student_Video, Teacher_model
 
 
 IEMOCAP_LABELS = ["ang", "exc", "fru", "hap", "neu", "sad"]
+MELD_LABELS = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
 TARGET_LABELS = ["A", "N", "J", "S"]
 TARGET_TO_ID = {name: idx for idx, name in enumerate(TARGET_LABELS)}
 MODALITY_ALIASES = {
@@ -31,6 +32,11 @@ MODALITY_ALIASES = {
     "video": "video",
     "visual": "video",
     "v": "video",
+    "tv": "tv",
+    "vt": "tv",
+    "text_video": "tv",
+    "video_text": "tv",
+    "vl": "tv",
 }
 MISSING_AUDIO_ALIASES = {
     "silence": "silence",
@@ -661,7 +667,7 @@ def make_batchs(sessions, eval_modality: str = "full", missing_audio_strategy: s
         else:
             audio_input = get_audio_from_file_or_silence(None)
 
-        if eval_modality in {"full", "video"}:
+        if eval_modality in {"full", "video", "tv"}:
             if last_mp4_path is not None and last_mp4_path.exists():
                 video_input = get_video_from_mp4(last_mp4_path)
             else:
@@ -681,20 +687,42 @@ def make_batchs(sessions, eval_modality: str = "full", missing_audio_strategy: s
     return batch_input_tokens, batch_attention_masks, batch_audio, batch_video, batch_labels
 
 
-def map_logits_6_to_probs_4(logits_6: torch.Tensor) -> torch.Tensor:
-    probs_6 = torch.softmax(logits_6, dim=-1)
-    p_ang = probs_6[:, 0]
-    p_exc = probs_6[:, 1]
-    p_fru = probs_6[:, 2]
-    p_hap = probs_6[:, 3]
-    p_neu = probs_6[:, 4]
-    p_sad = probs_6[:, 5]
+def map_logits_to_probs_4(logits: torch.Tensor, checkpoint_dataset: str) -> torch.Tensor:
+    probs = torch.softmax(logits, dim=-1)
+    dataset = checkpoint_dataset.upper()
 
-    p_a = p_ang + p_fru
-    p_n = p_neu
-    p_j = p_hap + p_exc
-    p_s = p_sad
-    return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
+    if dataset == "IEMOCAP":
+        # IEMOCAP order: [ang, exc, fru, hap, neu, sad]
+        p_ang = probs[:, 0]
+        p_exc = probs[:, 1]
+        p_fru = probs[:, 2]
+        p_hap = probs[:, 3]
+        p_neu = probs[:, 4]
+        p_sad = probs[:, 5]
+
+        p_a = p_ang + p_fru
+        p_n = p_neu
+        p_j = p_hap + p_exc
+        p_s = p_sad
+        return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
+
+    if dataset == "MELD":
+        # TELME/MELD order: [anger, disgust, fear, joy, neutral, sadness, surprise]
+        p_a = probs[:, 0]
+        p_n = probs[:, 4]
+        p_j = probs[:, 3]
+        p_s = probs[:, 5]
+        return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
+
+    raise ValueError(f"Unsupported checkpoint_dataset={checkpoint_dataset!r}")
+
+
+def run_fusion(fusion, text_hidden: torch.Tensor, video_hidden: torch.Tensor, audio_hidden: torch.Tensor, order: str):
+    if order == "audio_video":
+        return fusion(text_hidden, audio_hidden, video_hidden)
+    if order == "video_audio":
+        return fusion(text_hidden, video_hidden, audio_hidden)
+    raise ValueError(f"Unsupported fusion_input_order={order!r}")
 
 
 def evaluation(
@@ -709,6 +737,8 @@ def evaluation(
     audio_mean: Optional[torch.Tensor] = None,
     audio_std: Optional[torch.Tensor] = None,
     audio_noise_scale: float = 1.0,
+    checkpoint_dataset: str = "IEMOCAP",
+    fusion_input_order: str = "audio_video",
 ):
     eval_modality = normalize_eval_modality(eval_modality)
     missing_audio_strategy = normalize_missing_audio_strategy(missing_audio_strategy)
@@ -732,6 +762,10 @@ def evaluation(
                 video_hidden, _ = video_s(video_inputs)
                 text_hidden = torch.zeros_like(video_hidden)
                 audio_hidden = torch.zeros_like(video_hidden)
+            elif eval_modality == "tv":
+                text_hidden, _ = model_t(batch_input_tokens, attention_masks)
+                video_hidden, _ = video_s(video_inputs)
+                audio_hidden = torch.zeros_like(text_hidden)
             else:
                 text_hidden, _ = model_t(batch_input_tokens, attention_masks)
                 video_hidden, _ = video_s(video_inputs)
@@ -746,9 +780,9 @@ def evaluation(
                         audio_noise_scale,
                     )
 
-            logits_6 = fusion(text_hidden, video_hidden, audio_hidden)
+            logits = run_fusion(fusion, text_hidden, video_hidden, audio_hidden, fusion_input_order)
 
-            probs_4 = map_logits_6_to_probs_4(logits_6)
+            probs_4 = map_logits_to_probs_4(logits, checkpoint_dataset)
             pred_4 = probs_4.argmax(dim=1)
 
             pred_list.extend(pred_4.cpu().numpy().tolist())
@@ -858,7 +892,21 @@ def parse_args():
         "--eval_modality",
         type=str,
         default="full",
-        help="full/TELME fusion, text-only fusion, or video-only fusion. Non-selected fusion inputs are zeroed.",
+        help="full/TELME fusion, text-only, video-only, or text+video. Non-selected fusion inputs are zeroed.",
+    )
+    parser.add_argument(
+        "--checkpoint_dataset",
+        type=str,
+        default="IEMOCAP",
+        choices=["IEMOCAP", "MELD"],
+        help="Dataset/class order of the TELME checkpoints under --save_model_root.",
+    )
+    parser.add_argument(
+        "--fusion_input_order",
+        type=str,
+        default="audio_video",
+        choices=["audio_video", "video_audio"],
+        help="audio_video matches the original TELME repo calls: fusion(text, audio, video).",
     )
     parser.add_argument(
         "--missing_audio_strategy",
@@ -984,11 +1032,11 @@ def main():
     text_model = "roberta-large"
     audio_model = "facebook/data2vec-audio-base-960h"
     video_model = "facebook/timesformer-base-finetuned-k400"
-    cls_num = len(IEMOCAP_LABELS)
+    cls_num = len(MELD_LABELS) if args.checkpoint_dataset.upper() == "MELD" else len(IEMOCAP_LABELS)
 
-    need_text = args.eval_modality in {"full", "text"}
+    need_text = args.eval_modality in {"full", "text", "tv"}
     need_audio = args.eval_modality == "full"
-    need_video = args.eval_modality in {"full", "video"}
+    need_video = args.eval_modality in {"full", "video", "tv"}
 
     model_t = None
     audio_s = None
@@ -1013,7 +1061,11 @@ def main():
         video_s.load_state_dict(video_sd, strict=True)
         video_s = video_s.to(device).eval()
 
-    hidden_size, beta_shift, dropout_prob, num_head = 768, 2e-1, 0.2, 4
+    hidden_size, dropout_prob = 768, 0.2
+    if args.checkpoint_dataset.upper() == "MELD":
+        beta_shift, num_head = 1e-1, 3
+    else:
+        beta_shift, num_head = 2e-1, 4
     fusion = ASF(cls_num, hidden_size, beta_shift, dropout_prob, num_head)
     fusion_sd = load_state_dict_compat(Path(args.save_model_root) / "total_fusion.bin", device)
     fusion.load_state_dict(fusion_sd, strict=True)
@@ -1027,6 +1079,8 @@ def main():
 
     print(
         f"[Eval] modality={args.eval_modality} "
+        f"checkpoint_dataset={args.checkpoint_dataset} "
+        f"fusion_input_order={args.fusion_input_order} "
         f"missing_audio_strategy={args.missing_audio_strategy} "
         f"audio_stats_count={audio_stats_count}"
     )
@@ -1043,6 +1097,8 @@ def main():
             audio_mean,
             audio_std,
             args.audio_noise_scale,
+            args.checkpoint_dataset,
+            args.fusion_input_order,
         )
 
     if len(valid_samples) != len(golds):
