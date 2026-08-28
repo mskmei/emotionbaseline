@@ -28,12 +28,22 @@ def parse_args():
     parser.add_argument("--out_csv", type=str, required=True)
     parser.add_argument("--source", type=str, default="cc", choices=["cc", "all"])
     parser.add_argument("--yt_dlp_bin", type=str, default="yt-dlp")
-    parser.add_argument("--subtitle_langs", type=str, default="ja,ja-JP,jp")
+    parser.add_argument("--subtitle_langs", type=str, default="ja.*,ja,ja-JP,jp")
     parser.add_argument(
         "--video_format",
         type=str,
-        default="bestvideo[ext=mp4]/best[ext=mp4]/best",
+        default="18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best",
     )
+    parser.add_argument("--extractor_args", type=str, default="youtube:player_client=android_vr")
+    parser.add_argument("--cookies", type=str, default="")
+    parser.add_argument("--cookies_from_browser", type=str, default="")
+    parser.add_argument("--sleep_interval", type=float, default=2.0)
+    parser.add_argument("--max_sleep_interval", type=float, default=8.0)
+    parser.add_argument("--retries", type=int, default=5)
+    parser.add_argument("--fragment_retries", type=int, default=5)
+    parser.add_argument("--socket_timeout", type=float, default=30.0)
+    parser.add_argument("--use_ytdlp_config", action="store_true")
+    parser.add_argument("--verbose_ytdlp", action="store_true")
     parser.add_argument("--download_videos", action="store_true")
     parser.add_argument("--download_subtitles", action="store_true")
     parser.add_argument("--skip_missing", action="store_true")
@@ -49,6 +59,36 @@ def run_cmd(cmd: List[str]) -> bool:
     print("[cmd]", " ".join(cmd))
     result = subprocess.run(cmd)
     return result.returncode == 0
+
+
+def ytdlp_common_args(args) -> List[str]:
+    cmd = [args.yt_dlp_bin]
+    if not args.use_ytdlp_config:
+        cmd.append("--ignore-config")
+    if args.verbose_ytdlp:
+        cmd.append("--verbose")
+    if args.extractor_args:
+        cmd += ["--extractor-args", args.extractor_args]
+    if args.cookies:
+        cmd += ["--cookies", args.cookies]
+    if args.cookies_from_browser:
+        cmd += ["--cookies-from-browser", args.cookies_from_browser]
+    cmd += [
+        "--force-ipv4",
+        "--socket-timeout",
+        str(args.socket_timeout),
+        "--retries",
+        str(args.retries),
+        "--fragment-retries",
+        str(args.fragment_retries),
+        "--extractor-retries",
+        str(args.retries),
+        "--sleep-interval",
+        str(args.sleep_interval),
+        "--max-sleep-interval",
+        str(args.max_sleep_interval),
+    ]
+    return cmd
 
 
 def youtube_url(yid: str) -> str:
@@ -74,8 +114,8 @@ def ensure_video(args, yid: str) -> Optional[Path]:
         return None
 
     ok = run_cmd(
-        [
-            args.yt_dlp_bin,
+        ytdlp_common_args(args)
+        + [
             "--no-playlist",
             "--continue",
             "-f",
@@ -105,8 +145,8 @@ def ensure_subtitles(args, yid: str) -> List[Path]:
         return []
 
     ok = run_cmd(
-        [
-            args.yt_dlp_bin,
+        ytdlp_common_args(args)
+        + [
             "--no-playlist",
             "--skip-download",
             "--write-subs",

@@ -28,6 +28,17 @@ STRUCTURE_TXT_ROOT=${STRUCTURE_TXT_ROOT:-/raid_elmo/home/lr/wangyi/PTR/STUDIES-J
 
 BASE_MODEL=${BASE_MODEL:-Qwen/Qwen3-1.7B}
 GPU=${GPU:-0}
+YTDLP_EXTRACTOR_ARGS=${YTDLP_EXTRACTOR_ARGS:-youtube:player_client=android_vr}
+YTDLP_VIDEO_FORMAT=${YTDLP_VIDEO_FORMAT:-18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best}
+YTDLP_SLEEP_INTERVAL=${YTDLP_SLEEP_INTERVAL:-2}
+YTDLP_MAX_SLEEP_INTERVAL=${YTDLP_MAX_SLEEP_INTERVAL:-8}
+YTDLP_RETRIES=${YTDLP_RETRIES:-5}
+YTDLP_FRAGMENT_RETRIES=${YTDLP_FRAGMENT_RETRIES:-5}
+YTDLP_SOCKET_TIMEOUT=${YTDLP_SOCKET_TIMEOUT:-30}
+YTDLP_COOKIES=${YTDLP_COOKIES:-}
+YTDLP_COOKIES_FROM_BROWSER=${YTDLP_COOKIES_FROM_BROWSER:-}
+YTDLP_USE_CONFIG=${YTDLP_USE_CONFIG:-0}
+YTDLP_VERBOSE=${YTDLP_VERBOSE:-0}
 SAMPLE_FPS=${SAMPLE_FPS:-10}
 MAX_FRAMES=${MAX_FRAMES:-0}
 MODEL_COMPLEXITY=${MODEL_COMPLEXITY:-1}
@@ -44,6 +55,20 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-96}
 
 mkdir -p "$JSL_WORK_DIR" "$JSL_WORK_DIR/manifests"
 
+YTDLP_FLAGS=()
+if [ -n "$YTDLP_COOKIES" ]; then
+  YTDLP_FLAGS+=(--cookies "$YTDLP_COOKIES")
+fi
+if [ -n "$YTDLP_COOKIES_FROM_BROWSER" ]; then
+  YTDLP_FLAGS+=(--cookies_from_browser "$YTDLP_COOKIES_FROM_BROWSER")
+fi
+if [ "$YTDLP_USE_CONFIG" = "1" ]; then
+  YTDLP_FLAGS+=(--use_ytdlp_config)
+fi
+if [ "$YTDLP_VERBOSE" = "1" ]; then
+  YTDLP_FLAGS+=(--verbose_ytdlp)
+fi
+
 python JSL/download_jshuwa_metadata.py \
   --out_csv "$JSHUWA_METADATA_CSV"
 
@@ -53,11 +78,19 @@ python JSL/build_jshuwa_cc_manifest.py \
   --subtitle_dir "$JSHUWA_SUBTITLE_DIR" \
   --out_csv "$JSHUWA_MANIFEST" \
   --source cc \
+  --video_format "$YTDLP_VIDEO_FORMAT" \
+  --extractor_args "$YTDLP_EXTRACTOR_ARGS" \
+  --sleep_interval "$YTDLP_SLEEP_INTERVAL" \
+  --max_sleep_interval "$YTDLP_MAX_SLEEP_INTERVAL" \
+  --retries "$YTDLP_RETRIES" \
+  --fragment_retries "$YTDLP_FRAGMENT_RETRIES" \
+  --socket_timeout "$YTDLP_SOCKET_TIMEOUT" \
   --download_videos \
   --download_subtitles \
   --skip_missing \
   --max_yids "$MAX_YIDS" \
-  --max_rows "$MAX_ROWS"
+  --max_rows "$MAX_ROWS" \
+  "${YTDLP_FLAGS[@]}"
 
 python JSL/extract_mediapipe_keypoints.py \
   --manifest_csv "$JSHUWA_MANIFEST" \
