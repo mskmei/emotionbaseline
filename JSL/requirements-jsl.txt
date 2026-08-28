@@ -1,0 +1,11 @@
+accelerate
+datasets
+mediapipe
+opencv-python
+peft
+safetensors
+sentencepiece
+torch
+transformers>=4.51.0
+tqdm
+yt-dlp
