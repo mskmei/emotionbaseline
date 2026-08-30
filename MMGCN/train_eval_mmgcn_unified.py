@@ -243,8 +243,8 @@ def resolve_modals(modality: str, graph_type: str, requested: str) -> Tuple[str,
 
     resolved_graph = graph_type
     if graph_type in {"MMGCN", "MMGCN2"} and len(modals) < 2:
-        resolved_graph = "relation"
-        print(f"[MMGCN] graph_type={graph_type} does not support single modal {modals}; using relation graph.")
+        resolved_graph = "DeepGCN"
+        print(f"[MMGCN] graph_type={graph_type} does not support single modal {modals}; using DeepGCN graph.")
     return modals, resolved_graph
 
 
