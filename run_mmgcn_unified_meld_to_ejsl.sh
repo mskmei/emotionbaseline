@@ -25,6 +25,7 @@ GPU=${GPU:-0}
 TRANSLATE=${TRANSLATE:-1}
 REBUILD_FEATURES=${REBUILD_FEATURES:-0}
 MODALITIES=${MODALITIES:-tv}
+GRAPH_TYPE=${GRAPH_TYPE:-MMGCN}
 EPOCHS=${EPOCHS:-30}
 BATCH_SIZE=${BATCH_SIZE:-8}
 LR=${LR:-0.0003}
@@ -68,11 +69,13 @@ if [ "$REBUILD_FEATURES" = "1" ] || [ ! -f "$MELD_UNIFIED_PKL" ] || [ ! -f "$EJS
 fi
 
 echo "[MMGCN-UNIFIED] train on MELD ANJS4 and evaluate eJSL"
+echo "[MMGCN-UNIFIED] graph_type=$GRAPH_TYPE modalities=$MODALITIES"
 CUDA_VISIBLE_DEVICES="$GPU" python MMGCN/train_eval_mmgcn_unified.py \
   --train_pkl "$MELD_UNIFIED_PKL" \
   --external_test_pkl "$EJSL_UNIFIED_PKL" \
   --out_dir "$OUT_ROOT" \
   --modalities $MODALITIES \
+  --graph_type "$GRAPH_TYPE" \
   --epochs "$EPOCHS" \
   --batch_size "$BATCH_SIZE" \
   --lr "$LR" \
