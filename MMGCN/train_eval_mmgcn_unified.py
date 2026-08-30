@@ -598,6 +598,19 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
             "n_classes": int(info["n_classes"]),
         },
         "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "seed": args.seed,
+        "lr": args.lr,
+        "l2": args.l2,
+        "dropout": args.dropout,
+        "loss": args.loss,
+        "focal_gamma": args.focal_gamma,
+        "class_weight": not args.no_class_weight,
+        "max_grad_norm": args.max_grad_norm,
+        "use_speaker": args.use_speaker,
+        "use_modal": args.use_modal,
+        "av_using_lstm": args.av_using_lstm,
+        "use_residue": not args.no_residue,
         "best_epoch_by_external_or_source_weighted_f1": best_epoch,
         "epoch_metrics_csv": str(metrics_path),
     }
@@ -648,7 +661,7 @@ def parse_args():
     parser.add_argument("--modalities", nargs="+", default=["tv"])
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--batch_size", type=int, default=8)
-    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--eval_every", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--valid_ratio", type=float, default=0.0)
