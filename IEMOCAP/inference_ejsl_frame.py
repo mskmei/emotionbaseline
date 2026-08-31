@@ -714,6 +714,11 @@ def map_logits_to_probs_4(logits: torch.Tensor, checkpoint_dataset: str) -> torc
         p_s = probs[:, 5]
         return torch.stack([p_a, p_n, p_j, p_s], dim=-1)
 
+    if dataset == "MELD4":
+        if probs.size(-1) != len(TARGET_LABELS):
+            raise RuntimeError(f"MELD4 checkpoints must output 4 logits, got shape={tuple(logits.shape)}")
+        return probs
+
     raise ValueError(f"Unsupported checkpoint_dataset={checkpoint_dataset!r}")
 
 
@@ -898,7 +903,7 @@ def parse_args():
         "--checkpoint_dataset",
         type=str,
         default="IEMOCAP",
-        choices=["IEMOCAP", "MELD"],
+        choices=["IEMOCAP", "MELD", "MELD4"],
         help="Dataset/class order of the TELME checkpoints under --save_model_root.",
     )
     parser.add_argument(
@@ -1032,7 +1037,13 @@ def main():
     text_model = "roberta-large"
     audio_model = "facebook/data2vec-audio-base-960h"
     video_model = "facebook/timesformer-base-finetuned-k400"
-    cls_num = len(MELD_LABELS) if args.checkpoint_dataset.upper() == "MELD" else len(IEMOCAP_LABELS)
+    checkpoint_dataset = args.checkpoint_dataset.upper()
+    if checkpoint_dataset == "MELD":
+        cls_num = len(MELD_LABELS)
+    elif checkpoint_dataset == "MELD4":
+        cls_num = len(TARGET_LABELS)
+    else:
+        cls_num = len(IEMOCAP_LABELS)
 
     need_text = args.eval_modality in {"full", "text", "tv"}
     need_audio = args.eval_modality == "full"
@@ -1062,7 +1073,7 @@ def main():
         video_s = video_s.to(device).eval()
 
     hidden_size, dropout_prob = 768, 0.2
-    if args.checkpoint_dataset.upper() == "MELD":
+    if args.checkpoint_dataset.upper() in {"MELD", "MELD4"}:
         beta_shift, num_head = 1e-1, 3
     else:
         beta_shift, num_head = 2e-1, 4
