@@ -302,6 +302,56 @@ def build_model(args, info: Dict, modality: str, device: torch.device) -> Tuple[
     return model.to(device), modals, graph_type
 
 
+def load_torch_checkpoint(path: Path, device: torch.device):
+    try:
+        return torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=device)
+
+
+def extract_state_dict(checkpoint) -> Dict[str, torch.Tensor]:
+    if isinstance(checkpoint, dict):
+        for key in ["model_state_dict", "state_dict", "model"]:
+            value = checkpoint.get(key)
+            if isinstance(value, dict):
+                return value
+        return checkpoint
+    raise RuntimeError("Checkpoint does not contain a state dict")
+
+
+def partially_load_checkpoint(model: nn.Module, checkpoint_path: Path, device: torch.device) -> Dict:
+    checkpoint = load_torch_checkpoint(checkpoint_path, device)
+    raw_state = extract_state_dict(checkpoint)
+    model_state = model.state_dict()
+    compatible: Dict[str, torch.Tensor] = {}
+    skipped: List[str] = []
+
+    for key, value in raw_state.items():
+        clean_key = key[7:] if key.startswith("module.") else key
+        if torch.is_tensor(value) and clean_key in model_state and tuple(model_state[clean_key].shape) == tuple(value.shape):
+            compatible[clean_key] = value
+        else:
+            skipped.append(key)
+
+    missing, unexpected = model.load_state_dict(compatible, strict=False)
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "loaded_keys": len(compatible),
+        "skipped_keys": len(skipped),
+        "missing_keys": len(missing),
+        "unexpected_keys": len(unexpected),
+        "skipped_key_examples": skipped[:20],
+    }
+    print(
+        f"[MMGCN] init_checkpoint={checkpoint_path} "
+        f"loaded={summary['loaded_keys']} skipped={summary['skipped_keys']} "
+        f"missing_after_load={summary['missing_keys']}"
+    )
+    if skipped[:5]:
+        print(f"[MMGCN] skipped checkpoint keys examples={skipped[:5]}")
+    return summary
+
+
 def sequence_lengths(umask: torch.Tensor) -> List[int]:
     lengths: List[int] = []
     for row in umask:
@@ -467,6 +517,79 @@ def save_report(result: Optional[Dict], out_dir: Path, prefix: str, label_names:
     return summary
 
 
+def select_eval_result(
+    args,
+    valid_result: Optional[Dict],
+    source_result: Optional[Dict],
+    external_result: Optional[Dict],
+) -> Tuple[Optional[Dict], str]:
+    candidates = {
+        "valid": valid_result,
+        "source": source_result,
+        "external": external_result,
+    }
+    if args.selection_split == "auto":
+        if external_result is not None:
+            return external_result, "external"
+        if source_result is not None:
+            return source_result, "source"
+        if valid_result is not None:
+            return valid_result, "valid"
+        return None, "none"
+
+    selected = candidates.get(args.selection_split)
+    if selected is not None:
+        return selected, args.selection_split
+
+    for fallback_name in ["source", "external", "valid"]:
+        fallback = candidates[fallback_name]
+        if fallback is not None:
+            print(
+                f"[MMGCN] selection_split={args.selection_split} unavailable; "
+                f"falling back to {fallback_name}."
+            )
+            return fallback, fallback_name
+    return None, "none"
+
+
+def metric_value(result: Dict, metric_name: str) -> float:
+    value = result.get(metric_name)
+    if value is None:
+        raise ValueError(f"Metric {metric_name!r} is not available in result")
+    return float(value)
+
+
+def save_checkpoint(
+    path: Path,
+    state_dict: Dict[str, torch.Tensor],
+    args,
+    info: Dict,
+    modality: str,
+    modals: str,
+    graph_type: str,
+    epoch: int,
+    best_epoch: int,
+    best_score: float,
+    init_summary: Optional[Dict],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": state_dict,
+            "modality": modality,
+            "modals": modals,
+            "graph_type": graph_type,
+            "info": info,
+            "args": vars(args),
+            "epoch": epoch,
+            "best_epoch": best_epoch,
+            "best_score": best_score,
+            "init_checkpoint_summary": init_summary,
+        },
+        path,
+    )
+
+
 def build_loss(args, train_labels: Sequence[int], n_classes: int, device: torch.device) -> nn.Module:
     weight = None if args.no_class_weight else make_class_weights(train_labels, n_classes, device)
     if weight is not None:
@@ -495,6 +618,9 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
 
     train_loader, valid_loader, source_test_loader, external_loader = build_loaders(args, train_pkl, external_test_pkl)
     model, modals, graph_type = build_model(args, info, modality, device)
+    init_summary = None
+    if args.init_checkpoint:
+        init_summary = partially_load_checkpoint(model, resolve_path(args.init_checkpoint, must_exist=True), device)
     train_labels = collect_train_labels(train_pkl)
     loss_function = build_loss(args, train_labels, int(info["n_classes"]), device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
@@ -507,6 +633,7 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
     best_source = None
     best_external = None
     best_score = -1.0
+    best_selection_split = "none"
     final_source = None
     final_external = None
 
@@ -531,14 +658,34 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
             final_source = source_result
             final_external = external_result
 
-            select_result = external_result if external_result is not None else source_result
-            select_score = select_result["weighted_f1"] if select_result is not None else -1.0
+            select_result, resolved_selection_split = select_eval_result(args, valid_result, source_result, external_result)
+            select_score = metric_value(select_result, args.selection_metric) if select_result is not None else -1.0
             if select_score > best_score:
                 best_score = select_score
                 best_epoch = epoch
+                best_selection_split = resolved_selection_split
                 best_source = result_snapshot(source_result)
                 best_external = result_snapshot(external_result)
                 best_state = copy.deepcopy(model.state_dict())
+                print(
+                    f"[MMGCN][{modality}] new best epoch={epoch} "
+                    f"split={resolved_selection_split} {args.selection_metric}={best_score:.4f}"
+                )
+
+        if args.save_epoch_every > 0 and (epoch % args.save_epoch_every == 0 or epoch == args.epochs):
+            save_checkpoint(
+                out_dir / "checkpoints" / f"epoch_{epoch:03d}.pt",
+                copy.deepcopy(model.state_dict()),
+                args,
+                info,
+                modality,
+                modals,
+                graph_type,
+                epoch,
+                best_epoch,
+                best_score,
+                init_summary,
+            )
 
         row = {
             "epoch": epoch,
@@ -611,6 +758,14 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
         "use_modal": args.use_modal,
         "av_using_lstm": args.av_using_lstm,
         "use_residue": not args.no_residue,
+        "selection_split": args.selection_split,
+        "selection_metric": args.selection_metric,
+        "best_selection_split": best_selection_split,
+        "best_epoch_by_selection_metric": best_epoch,
+        "best_selection_score": best_score,
+        "init_checkpoint": args.init_checkpoint,
+        "init_checkpoint_summary": init_summary,
+        "save_epoch_every": args.save_epoch_every,
         "best_epoch_by_external_or_source_weighted_f1": best_epoch,
         "epoch_metrics_csv": str(metrics_path),
     }
@@ -620,16 +775,18 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
     best_external_summary = save_report(best_external, out_dir, "external_test_best", label_names, {**common_extra, "split": "external_test", "selection": "best"})
 
     if best_state is not None:
-        torch.save(
-            {
-                "model_state_dict": best_state,
-                "modality": modality,
-                "modals": modals,
-                "graph_type": graph_type,
-                "info": info,
-                "args": vars(args),
-            },
+        save_checkpoint(
             out_dir / "model_best.pt",
+            best_state,
+            args,
+            info,
+            modality,
+            modals,
+            graph_type,
+            best_epoch,
+            best_epoch,
+            best_score,
+            init_summary,
         )
 
     print(f"[MMGCN][{modality}] reports saved to {out_dir}")
@@ -677,6 +834,10 @@ def parse_args():
     parser.add_argument("--no_class_weight", action="store_true")
     parser.add_argument("--n_classes", type=int, default=0)
     parser.add_argument("--label_names", nargs="*", default=[])
+    parser.add_argument("--selection_split", choices=["auto", "valid", "source", "external"], default="auto")
+    parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
+    parser.add_argument("--init_checkpoint", type=str, default="")
+    parser.add_argument("--save_epoch_every", type=int, default=0)
 
     parser.add_argument("--base_model", default="LSTM")
     parser.add_argument("--graph_type", default="MMGCN")
