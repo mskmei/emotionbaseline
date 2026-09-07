@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import random
 import shutil
@@ -77,6 +78,52 @@ def seed_everything(seed: int) -> None:
 def copy_file(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
+
+
+def load_state_dict_compat(path: Path, device: torch.device):
+    try:
+        state = torch.load(path, map_location=device, weights_only=True)
+    except TypeError:
+        state = torch.load(path, map_location=device)
+    if isinstance(state, dict) and "state_dict" in state and isinstance(state["state_dict"], dict):
+        state = state["state_dict"]
+    if isinstance(state, dict) and "model_state_dict" in state and isinstance(state["model_state_dict"], dict):
+        state = state["model_state_dict"]
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Unsupported checkpoint format: {path}")
+    state.pop("model.embeddings.position_ids", None)
+    state.pop("text_model.embeddings.position_ids", None)
+    return state
+
+
+def partially_load_state_dict(model: nn.Module, checkpoint_path: Path, device: torch.device) -> dict:
+    state = load_state_dict_compat(checkpoint_path, device)
+    model_state = model.state_dict()
+    compatible = {}
+    skipped = []
+    for key, value in state.items():
+        clean_key = key[7:] if key.startswith("module.") else key
+        if torch.is_tensor(value) and clean_key in model_state and tuple(model_state[clean_key].shape) == tuple(value.shape):
+            compatible[clean_key] = value
+        else:
+            skipped.append(key)
+    missing, unexpected = model.load_state_dict(compatible, strict=False)
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "loaded_keys": len(compatible),
+        "skipped_keys": len(skipped),
+        "missing_keys": len(missing),
+        "unexpected_keys": len(unexpected),
+        "skipped_key_examples": skipped[:20],
+    }
+    print(
+        f"[TELME] init video checkpoint={checkpoint_path} "
+        f"loaded={summary['loaded_keys']} skipped={summary['skipped_keys']} "
+        f"missing_after_load={summary['missing_keys']}"
+    )
+    if skipped[:5]:
+        print(f"[TELME] skipped checkpoint keys examples={skipped[:5]}")
+    return summary
 
 
 def save_report(labels: Iterable[int], preds: Iterable[int], out_path: Path) -> None:
@@ -296,13 +343,26 @@ def train_video_student(args, teacher: Teacher_model, device: torch.device, shar
         print(f"[TELME][video-student] reuse {student_path}")
         model.load_state_dict(torch.load(student_path, map_location=device))
         return model.eval()
+    init_summary = None
+    if args.video_init_checkpoint:
+        init_summary = partially_load_state_dict(model, Path(args.video_init_checkpoint), device)
+        shared_root.mkdir(parents=True, exist_ok=True)
+        (shared_root / "video_init_summary.json").write_text(
+            json.dumps(init_summary, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    if args.freeze_video_backbone:
+        for param in model.model.parameters():
+            param.requires_grad = False
+        print("[TELME][video-student] freeze TimeSformer backbone; train classifier head only.")
 
     for param in teacher.parameters():
         param.requires_grad = False
     teacher.eval()
 
     train_loader, dev_loader, test_loader = build_loaders(args, load_video=True)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.student_lr)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.student_lr)
     total_steps = max(len(train_loader.dataset) * max(args.student_epochs, 1), 1)
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
@@ -345,6 +405,11 @@ def train_video_student(args, teacher: Teacher_model, device: torch.device, shar
             test_f1 = precision_recall_fscore_support(test_labels, test_preds, average="weighted", zero_division=0)[2]
             print(f"[TELME][video-student] epoch={epoch + 1} test_f1={test_f1:.6f}")
             save_report(test_labels, test_preds, shared_root / "video_student_meld_test_report.txt")
+
+        if args.save_epoch_every > 0 and ((epoch + 1) % args.save_epoch_every == 0 or epoch + 1 == args.student_epochs):
+            ckpt_dir = shared_root / "student_video" / "checkpoints"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(model.state_dict(), ckpt_dir / f"epoch_{epoch + 1:03d}.bin")
 
     if not student_path.exists():
         student_path.parent.mkdir(parents=True, exist_ok=True)
@@ -471,6 +536,11 @@ def train_fusion_modality(
             print(f"[TELME][fusion:{modality}] epoch={epoch + 1} test_f1={test_f1:.6f}")
             save_report(test_labels, test_preds, target_root / "meld_test_report.txt")
 
+        if args.save_epoch_every > 0 and ((epoch + 1) % args.save_epoch_every == 0 or epoch + 1 == args.fusion_epochs):
+            ckpt_dir = target_root / "checkpoints"
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(fusion.state_dict(), ckpt_dir / f"epoch_{epoch + 1:03d}.bin")
+
     if not fusion_path.exists():
         target_root.mkdir(parents=True, exist_ok=True)
         torch.save(fusion.state_dict(), fusion_path)
@@ -497,6 +567,9 @@ def parse_args():
     parser.add_argument("--max_eval_samples", type=int, default=0)
     parser.add_argument("--reuse_shared", action="store_true")
     parser.add_argument("--reuse_fusion", action="store_true")
+    parser.add_argument("--video_init_checkpoint", type=str, default="")
+    parser.add_argument("--freeze_video_backbone", action="store_true")
+    parser.add_argument("--save_epoch_every", type=int, default=0)
     return parser.parse_args()
 
 
