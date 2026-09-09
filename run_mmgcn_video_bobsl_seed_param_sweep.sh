@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR=${ROOT_DIR:-"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"}
 cd "$ROOT_DIR"
 
-GPU=${GPU:-0}
+GPU=${GPU:-1}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/mmgcn_bobsl_meld_ejsl}
 UNIFIED_ROOT=${UNIFIED_ROOT:-/raid_zoe/home/lr/maokeyu/sign/mmgcn_unified_meld_ejsl}
 OUT_ROOT=${OUT_ROOT:-"$WORK_ROOT/video_bobsl_seed_param_sweep"}
