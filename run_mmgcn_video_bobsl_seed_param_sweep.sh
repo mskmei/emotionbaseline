@@ -16,6 +16,7 @@ MELD_UNIFIED_PKL=${MELD_UNIFIED_PKL:-"$UNIFIED_ROOT/meld_anjs4_unified.pkl"}
 EJSL_UNIFIED_PKL=${EJSL_UNIFIED_PKL:-"$UNIFIED_ROOT/ejsl_anjs4_unified.pkl"}
 
 RESUME=${RESUME:-1}
+CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-1}
 RUN_PRETRAIN_VARIANTS=${RUN_PRETRAIN_VARIANTS:-1}
 FT_GRAPH_TYPE=${FT_GRAPH_TYPE:-MMGCN}
 BOBSL_GRAPH_TYPE=${BOBSL_GRAPH_TYPE:-MMGCN}
@@ -55,6 +56,23 @@ for item in sys.argv[2:]:
 path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
+}
+
+run_logged() {
+  local log_path="$1"
+  shift
+  set +e
+  CUDA_VISIBLE_DEVICES="$GPU" "$@" | tee "$log_path"
+  local status="${PIPESTATUS[0]}"
+  set -e
+  if [ "$status" -ne 0 ]; then
+    echo "[MMGCN-VIDEO-SWEEP] command failed with status=$status" | tee "$log_path.failed"
+    if [ "$CONTINUE_ON_ERROR" = "1" ]; then
+      echo "[MMGCN-VIDEO-SWEEP] CONTINUE_ON_ERROR=1, continuing to next trial"
+      return 0
+    fi
+    exit "$status"
+  fi
 }
 
 pretrain_checkpoint_for() {
@@ -102,7 +120,7 @@ run_bobsl_pretrain() {
     "pre_extra_args=${extra_args[*]}"
 
   echo "[MMGCN-VIDEO-SWEEP][pretrain:$key] seed=$seed epochs=$epochs batch=$batch_size lr=$lr l2=$l2 dropout=$dropout loss=$loss gamma=$focal_gamma extra=${extra_args[*]}"
-  CUDA_VISIBLE_DEVICES="$GPU" python MMGCN/train_eval_mmgcn_unified.py \
+  run_logged "$out_dir/train.log" python MMGCN/train_eval_mmgcn_unified.py \
     --train_pkl "$BOBSL_TRAIN_VAL_PKL" \
     --external_test_pkl "$BOBSL_TEST_PKL" \
     --out_dir "$out_dir" \
@@ -120,7 +138,7 @@ run_bobsl_pretrain() {
     --selection_metric "$SELECTION_METRIC" \
     --save_epoch_every "$SAVE_EPOCH_EVERY" \
     --seed "$seed" \
-    "${extra_args[@]}" | tee "$out_dir/train.log"
+    "${extra_args[@]}"
 }
 
 ensure_pretrain() {
@@ -224,7 +242,7 @@ run_meld_finetune() {
   fi
   cmd+=("${extra_args[@]}")
 
-  CUDA_VISIBLE_DEVICES="$GPU" "${cmd[@]}" | tee "$out_dir/train.log"
+  run_logged "$out_dir/train.log" "${cmd[@]}"
 }
 
 run_pair_trial() {

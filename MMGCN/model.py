@@ -1033,7 +1033,11 @@ class DialogueGCNModel(nn.Module):
             self.gatedatt = MMGatedAttention(2*D_e + graph_hidden_size, graph_hidden_size, att_type='general')
             self.dropout_ = nn.Dropout(self.dropout)
             if self.att_type == 'concat_subsequently':
-                self.smax_fc = nn.Linear(300*len(self.modals), n_classes)
+                if self.graph_type == 'DeepGCN' and not self.use_residue:
+                    smax_in = graph_hidden_size * len(self.modals)
+                else:
+                    smax_in = (2*D_e + graph_hidden_size) * len(self.modals)
+                self.smax_fc = nn.Linear(smax_in, n_classes)
             elif self.att_type == 'gated':
                 if len(self.modals) == 3:
                     self.smax_fc = nn.Linear(100*len(self.modals), n_classes)
