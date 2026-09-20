@@ -16,7 +16,6 @@ except ImportError:
 from HypergraphConv import HypergraphConv
 from torch_geometric.nn import GCNConv
 from itertools import permutations
-from torch_geometric.nn.pool.topk_pool import topk
 from torch_geometric.nn import global_mean_pool as gap, global_max_pool as gmp, global_add_pool as gsp
 from torch_geometric.nn.inits import glorot
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
