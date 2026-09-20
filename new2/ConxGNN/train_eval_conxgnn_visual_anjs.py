@@ -26,6 +26,7 @@ sys.path.insert(0, str(REPO_ROOT / "new"))
 import src  # noqa: E402
 from anjs_video_common import ANJS_LABELS, resolve_path  # noqa: E402
 from src.loss.FocalLoss import FocalLoss  # noqa: E402
+from src.TensorGraph import TensorGraph  # noqa: E402
 
 
 def seed_everything(seed: int) -> None:
@@ -228,7 +229,7 @@ def move_batch(data: Dict, device: torch.device) -> Dict:
 
 def conx_forward_logits(model: nn.Module, data: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
     batch_padded_tensor_data = copy.deepcopy(data)
-    base_tensor_graph = src.TensorGraph(batch_padded_tensor_data, model.modalities)
+    base_tensor_graph = TensorGraph(batch_padded_tensor_data, model.modalities)
     _uni_loss, tensor_graph = model.uniencoder.get_loss(base_tensor_graph)
     tensor_graph.padded_dict2multimodal_features()
     graph_out, _ = model.graph_model.get_loss(tensor_graph)
