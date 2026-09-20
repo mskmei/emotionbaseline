@@ -161,11 +161,9 @@ class HypergraphConv(MessagePassing):
                         hyperedge_index[1], dim=0, dim_size=num_edges)      #[num_edges]
         B = 1.0 / B
         B[B == float("inf")] = 0
-        self.flow = 'source_to_target'
         out = self.propagate(hyperedge_index, x=x, norm=B, alpha=alpha,#hyperedge_attr[hyperedge_index[1]],  
                              size=(num_nodes, num_edges))                   #num_edges,1,100
-        self.flow = 'target_to_source'
-        out = self.propagate(hyperedge_index, x=out, norm=D, alpha=alpha,
+        out = self.propagate(hyperedge_index.flip([0]), x=out, norm=D, alpha=alpha,
                              size=(num_edges, num_nodes))                   #num_nodes,1,100
         if self.concat is True and out.size(1) == 1:
             out = out.view(-1, self.heads * self.out_channels)
