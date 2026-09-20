@@ -4,7 +4,10 @@ import torch
 from tqdm import tqdm
 from sklearn import metrics
 import src
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 log = src.utils.get_logger()
 
@@ -23,6 +26,8 @@ class Coach:
         src.utils.count_parameters(model)
 
         if self.args.wandb:
+            if wandb is None:
+                raise ImportError("wandb is required only when args.wandb is enabled.")
             assert self.args.prj_name is not None, "You must specify the argument --prj_name"
             assert self.args.run is not None, "You must specify the argument --run"
             wandb.require("core")

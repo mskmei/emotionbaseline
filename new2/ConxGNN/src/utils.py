@@ -6,7 +6,10 @@ import logging
 import numpy as np
 import torch
 import pickle
-import wandb
+try:
+    import wandb
+except ImportError:
+    wandb = None
 import torch.nn.parameter as param
 from .Config import Config
 
@@ -76,6 +79,8 @@ def count_parameters(model, print_log=True):
 
 
 def log_to_wandb(model):
+    if wandb is None:
+        raise ImportError("wandb is required only when wandb logging is enabled.")
 
     total_params, learnable_params, unlearnable_params = count_parameters(model, print_log=False)
 

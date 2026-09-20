@@ -4,7 +4,25 @@ import torch
 from torch import Tensor
 from torch.nn import Parameter
 import torch.nn.functional as F
-from torch_scatter import scatter_add
+try:
+    from torch_scatter import scatter_add
+except ImportError:
+    def scatter_add(src, index, dim=0, dim_size=None):
+        if dim < 0:
+            dim = src.dim() + dim
+        if dim_size is None:
+            dim_size = int(index.max().item()) + 1 if index.numel() else 0
+        out_size = list(src.size())
+        out_size[dim] = dim_size
+        out = src.new_zeros(out_size)
+        if index.numel() == 0:
+            return out
+        index = index.to(dtype=torch.long, device=src.device)
+        if index.dim() == 1 and src.dim() > 1:
+            view = [1] * src.dim()
+            view[dim] = -1
+            index = index.view(view).expand_as(src)
+        return out.scatter_add_(dim, index, src)
 from torch_geometric.utils import softmax
 from torch_geometric.nn.conv import MessagePassing
 #from torch_geometric.nn import aggr
