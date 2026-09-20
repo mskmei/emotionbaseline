@@ -9,7 +9,10 @@ import numpy as np, itertools, random, copy, math
 import math
 import scipy.sparse as sp
 from model_GCN import GCNII_lyc
-import ipdb
+try:
+    import ipdb
+except ImportError:
+    ipdb = None
 from HypergraphConv import HypergraphConv
 from torch_geometric.nn import GCNConv
 from itertools import permutations
