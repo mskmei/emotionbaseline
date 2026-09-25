@@ -154,6 +154,52 @@ def classify_quadrant(delta_meld: float, delta_ejsl: float, eps: float) -> str:
     return "near_zero_or_mixed"
 
 
+def needed_count(fraction: float, paired_runs: int) -> int:
+    if paired_runs <= 0:
+        return 0
+    return max(1, int(math.ceil(float(fraction) * paired_runs)))
+
+
+def target_status(summary: Dict[str, Any], eps: float, target_fraction: float, strong_fraction: float) -> str:
+    paired_runs = int(summary.get("paired_runs") or 0)
+    if paired_runs <= 0:
+        return "BASELINE_OR_UNPAIRED"
+    target_count = int(summary.get("target_count") or 0)
+    delta_meld = as_float(summary.get("delta_MELD_mean"))
+    delta_ejsl = as_float(summary.get("delta_eJSL_mean"))
+    mean_is_target = delta_meld > eps and delta_ejsl < -eps
+    if mean_is_target and target_count >= needed_count(strong_fraction, paired_runs):
+        return "STRONG_TARGET"
+    if mean_is_target and target_count >= needed_count(target_fraction, paired_runs):
+        return "TARGET"
+    if mean_is_target:
+        return "MEAN_TARGET_WEAK_SEEDS"
+    if target_count > 0:
+        return "MIXED_TARGET_SEEDS"
+    if delta_meld > eps and delta_ejsl > eps:
+        return "BOTH_UP"
+    if delta_meld < -eps and delta_ejsl < -eps:
+        return "BOTH_DOWN"
+    if delta_meld < -eps and delta_ejsl > eps:
+        return "MELD_DOWN_EJSL_UP"
+    return "NOT_TARGET"
+
+
+def status_rank(status: str) -> int:
+    ranks = {
+        "STRONG_TARGET": 6,
+        "TARGET": 5,
+        "MEAN_TARGET_WEAK_SEEDS": 4,
+        "MIXED_TARGET_SEEDS": 3,
+        "BOTH_DOWN": 2,
+        "NOT_TARGET": 1,
+        "BOTH_UP": 0,
+        "MELD_DOWN_EJSL_UP": 0,
+        "BASELINE_OR_UNPAIRED": -1,
+    }
+    return ranks.get(status, -1)
+
+
 def add_paired_deltas(rows: List[Dict[str, Any]], eps: float) -> List[Dict[str, Any]]:
     baseline_by_key = {
         (str(row.get("baseline")), str(row.get("seed"))): row
@@ -193,7 +239,12 @@ def add_paired_deltas(rows: List[Dict[str, Any]], eps: float) -> List[Dict[str, 
     return out
 
 
-def summarize_groups(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def summarize_groups(
+    rows: Sequence[Dict[str, Any]],
+    eps: float,
+    target_fraction: float,
+    strong_fraction: float,
+) -> List[Dict[str, Any]]:
     grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[(str(row.get("baseline", "")), str(row.get("config", "")))].append(row)
@@ -234,6 +285,21 @@ def summarize_groups(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "both_down_count": quadrant_counts.get("both_down", 0),
             "near_zero_or_mixed_count": quadrant_counts.get("near_zero_or_mixed", 0),
         }
+        paired_runs = int(summary["paired_runs"])
+        target_count = int(summary["target_count"])
+        summary["target_fraction"] = "" if paired_runs == 0 else target_count / paired_runs
+        summary["target_needed"] = "" if paired_runs == 0 else needed_count(target_fraction, paired_runs)
+        summary["strong_target_needed"] = "" if paired_runs == 0 else needed_count(strong_fraction, paired_runs)
+        summary["target_status"] = target_status(summary, eps, target_fraction, strong_fraction)
+        delta_meld_mean = as_float(summary["delta_MELD_mean"])
+        delta_ejsl_mean = as_float(summary["delta_eJSL_mean"])
+        delta_gap = delta_meld_mean - delta_ejsl_mean
+        summary["delta_gap_MELD_minus_eJSL"] = "" if math.isnan(delta_gap) else delta_gap
+        summary["target_rank_score"] = (
+            status_rank(str(summary["target_status"])) * 100.0
+            + (0.0 if paired_runs == 0 else 10.0 * target_count / paired_runs)
+            + (0.0 if math.isnan(delta_gap) else delta_gap)
+        )
         for label in LABELS:
             summary[f"delta_MELD_{label}_f1_mean"] = numeric(as_float(row.get(f"delta_MELD_{label}_f1")) for row in group_rows)["mean"]
             summary[f"delta_eJSL_{label}_f1_mean"] = numeric(as_float(row.get(f"delta_eJSL_{label}_f1")) for row in group_rows)["mean"]
@@ -241,12 +307,26 @@ def summarize_groups(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     summaries.sort(
         key=lambda row: (
+            as_float(row.get("target_rank_score")),
             as_float(row.get("target_count")),
-            as_float(row.get("delta_MELD_mean")) - as_float(row.get("delta_eJSL_mean")),
+            as_float(row.get("delta_gap_MELD_minus_eJSL")),
         ),
         reverse=True,
     )
     return summaries
+
+
+def target_config_ranking(groups: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows = [row for row in groups if str(row.get("target_status")) != "BASELINE_OR_UNPAIRED"]
+    return sorted(
+        rows,
+        key=lambda row: (
+            as_float(row.get("target_rank_score")),
+            as_float(row.get("target_count")),
+            as_float(row.get("delta_gap_MELD_minus_eJSL")),
+        ),
+        reverse=True,
+    )
 
 
 def write_csv(path: Path, rows: Sequence[Dict[str, Any]]) -> None:
@@ -278,12 +358,24 @@ def build_report(rows: Sequence[Dict[str, Any]], groups: Sequence[Dict[str, Any]
         f"[joint-tradeoff] overall corr(delta_MELD, delta_eJSL)={fmt(pearson(d_meld, d_ejsl))}",
         f"[joint-tradeoff] quadrants={dict(sorted(quadrant_counts.items()))}",
         "",
-        "[joint-tradeoff] group means",
+        "[joint-tradeoff] target-config ranking",
     ]
+    for idx, row in enumerate(target_config_ranking(groups)[:top_k], start=1):
+        lines.append(
+            f"  {idx:02d}. {row['baseline']}/{row['config']} status={row['target_status']} "
+            f"target={row['target_count']}/{row['paired_runs']} "
+            f"mean_delta_MELD={fmt(row['delta_MELD_mean'])} "
+            f"mean_delta_eJSL={fmt(row['delta_eJSL_mean'])} "
+            f"gap={fmt(row['delta_gap_MELD_minus_eJSL'])} "
+            f"MELD={fmt(row['MELD_wf1_mean'])} eJSL={fmt(row['eJSL_wf1_mean'])} "
+            f"bobsl_max={row['bobsl_max']} lr={row['lr']} drop={row['dropout']} loss={row['loss']}"
+        )
+    lines.extend(["", "[joint-tradeoff] group means"])
     for row in groups:
         lines.append(
             "  "
-            f"{row['baseline']}/{row['config']}: n={row['n_runs']} paired={row['paired_runs']} "
+            f"{row['baseline']}/{row['config']}: status={row['target_status']} "
+            f"n={row['n_runs']} paired={row['paired_runs']} "
             f"MELD={fmt(row['MELD_wf1_mean'])}+/-{fmt(row['MELD_wf1_std'])} "
             f"eJSL={fmt(row['eJSL_wf1_mean'])}+/-{fmt(row['eJSL_wf1_std'])} "
             f"delta_MELD={fmt(row['delta_MELD_mean'])} "
@@ -325,6 +417,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--default_roots", action="store_true", help="Include default server roots for CMERC, ConxGNN, and ECERC.")
     parser.add_argument("--out_dir", type=str, default="/raid_zoe/home/lr/maokeyu/sign/joint_tradeoff_natural_summary")
     parser.add_argument("--eps", type=float, default=0.0, help="Tolerance for up/down quadrant decisions.")
+    parser.add_argument("--target_fraction", type=float, default=0.6, help="Minimum target seed fraction for TARGET status.")
+    parser.add_argument("--strong_target_fraction", type=float, default=0.8, help="Minimum target seed fraction for STRONG_TARGET status.")
     parser.add_argument("--top_k", type=int, default=30)
     return parser.parse_args()
 
@@ -336,12 +430,19 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = add_paired_deltas(collect_rows(roots), eps=args.eps)
-    groups = summarize_groups(rows)
+    groups = summarize_groups(
+        rows,
+        eps=args.eps,
+        target_fraction=args.target_fraction,
+        strong_fraction=args.strong_target_fraction,
+    )
     target_rows = [row for row in rows if row.get("quadrant") == "target_meld_up_ejsl_down"]
+    target_configs = target_config_ranking(groups)
 
     write_csv(out_dir / "joint_tradeoff_rows.csv", rows)
     write_csv(out_dir / "joint_tradeoff_group_summary.csv", groups)
     write_csv(out_dir / "joint_tradeoff_target_cases.csv", target_rows)
+    write_csv(out_dir / "joint_tradeoff_target_config_ranking.csv", target_configs)
     report = build_report(rows, groups, top_k=args.top_k)
     (out_dir / "joint_tradeoff_report.txt").write_text(report, encoding="utf-8")
 
@@ -349,6 +450,7 @@ def main() -> None:
     print(f"[joint-tradeoff] rows_csv={out_dir / 'joint_tradeoff_rows.csv'}")
     print(f"[joint-tradeoff] group_csv={out_dir / 'joint_tradeoff_group_summary.csv'}")
     print(f"[joint-tradeoff] target_csv={out_dir / 'joint_tradeoff_target_cases.csv'}")
+    print(f"[joint-tradeoff] target_config_csv={out_dir / 'joint_tradeoff_target_config_ranking.csv'}")
     print(f"[joint-tradeoff] report={out_dir / 'joint_tradeoff_report.txt'}")
 
 
