@@ -72,7 +72,7 @@ def parse_args():
     parser.add_argument("--max_video_mb", type=float, default=18.0)
     parser.add_argument("--temperature", type=float, default=0.1)
     parser.add_argument("--top_p", type=float, default=1.0)
-    parser.add_argument("--max_tokens", type=int, default=256)
+    parser.add_argument("--max_tokens", type=int, default=96)
     parser.add_argument("--reasoning_effort", type=str, default="minimal", help="Set empty string to omit.")
     parser.add_argument("--api_key_env", type=str, default="OPENROUTER_API_KEY")
     parser.add_argument(
@@ -275,12 +275,10 @@ def prompt_text(media_info: Dict[str, object]) -> str:
         "Do not write a dialogue summary, a label, or an explanation.\n"
         "No filename, sample ID, dataset label, speaker name, or oracle transcript is available to you; use only the visual input.\n"
         "If the signs are not readable, give the most likely short Japanese description and lower confidence.\n"
-        "Return only one JSON object with these keys:\n"
+        "Return only one compact JSON object with these keys and no extra whitespace:\n"
         "{"
         "\"text_ja\": string, "
-        "\"text_en\": string, "
         "\"confidence\": number between 0 and 1, "
-        "\"visual_notes\": string, "
         "\"uncertain\": boolean"
         "}."
     )

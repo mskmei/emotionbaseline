@@ -9,19 +9,19 @@ cd "$ROOT_DIR"
 DIAL_LIST=${DIAL_LIST:-/home/lr/wangyi/Sign/RO-MAN/eJSL_dial_dataset/ejsldial_filenames.csv}
 FRAME_ROOT=${FRAME_ROOT:-/raid_zoe/home/lr/wangyi/sign/eJSL_dial/frame}
 VIDEO_ROOT=${VIDEO_ROOT:-/raid_zoe/home/lr/wangyi/sign/eJSL_dial/video}
-OUT_ROOT=${OUT_ROOT:-/raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/openrouter_ejsl_100}
+OUT_ROOT=${OUT_ROOT:-/raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/openrouter_ejsl_20}
 STRUCTURE_TXT_ROOT=${STRUCTURE_TXT_ROOT:-/raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue}
 OUTPUT_TXT_ROOT=${OUTPUT_TXT_ROOT:-"$OUT_ROOT/txt_roots"}
 WRITE_TXT_TREE=${WRITE_TXT_TREE:-0}
 
 MODELS=${MODELS:-"google/gemini-3.5-flash google/gemini-3-pro-preview"}
-LIMIT=${LIMIT:-100}
+LIMIT=${LIMIT:-20}
 SELECTION=${SELECTION:-balanced}
 INPUT_MODE=${INPUT_MODE:-frames}
 NUM_FRAMES=${NUM_FRAMES:-32}
 IMAGE_MAX_SIDE=${IMAGE_MAX_SIDE:-640}
 JPEG_QUALITY=${JPEG_QUALITY:-78}
-MAX_TOKENS=${MAX_TOKENS:-256}
+MAX_TOKENS=${MAX_TOKENS:-96}
 TEMPERATURE=${TEMPERATURE:-0.1}
 TOP_P=${TOP_P:-1.0}
 REASONING_EFFORT=${REASONING_EFFORT:-minimal}
