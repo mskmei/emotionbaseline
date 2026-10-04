@@ -13,12 +13,19 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from manifest_utils import append_jsonl, parse_ejsl_sample_id, read_ejsl_names
+from manifest_utils import (
+    append_jsonl,
+    parse_ejsl_sample_id,
+    read_dialogue_structure,
+    read_ejsl_names,
+    sanitize_generated_text,
+)
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -59,7 +66,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--selection", type=str, default="balanced", choices=["balanced", "first"])
     parser.add_argument("--input_mode", type=str, default="frames", choices=["frames", "video"])
-    parser.add_argument("--num_frames", type=int, default=8)
+    parser.add_argument("--num_frames", type=int, default=32, help="Maximum frames sampled across the full utterance.")
     parser.add_argument("--image_max_side", type=int, default=640)
     parser.add_argument("--jpeg_quality", type=int, default=78)
     parser.add_argument("--max_video_mb", type=float, default=18.0)
@@ -68,6 +75,19 @@ def parse_args():
     parser.add_argument("--max_tokens", type=int, default=256)
     parser.add_argument("--reasoning_effort", type=str, default="minimal", help="Set empty string to omit.")
     parser.add_argument("--api_key_env", type=str, default="OPENROUTER_API_KEY")
+    parser.add_argument(
+        "--structure_txt_root",
+        type=str,
+        default="/raid_elmo/home/lr/wangyi/PTR/STUDIES-Japanese/Short_dialogue",
+        help="Oracle txt root used only for speaker/dialogue/emotion structure, never sent to OpenRouter.",
+    )
+    parser.add_argument(
+        "--output_txt_root",
+        type=str,
+        default="",
+        help="Optional root for replacement eJSL txt trees. With multiple models, each model gets a subdirectory.",
+    )
+    parser.add_argument("--write_txt_tree", action="store_true")
     parser.add_argument("--sleep_sec", type=float, default=0.2)
     parser.add_argument("--generation_poll_retries", type=int, default=3)
     parser.add_argument("--generation_poll_sleep", type=float, default=2.0)
@@ -132,9 +152,9 @@ def sample_frame_paths(frame_dir: Path, num_frames: int) -> List[Path]:
     paths = list_frame_paths(frame_dir)
     if not paths:
         return []
+    if len(paths) <= num_frames:
+        return paths
     selected = [paths[int(i)] for i in sample_indices(len(paths), num_frames)]
-    if selected and len(selected) < num_frames:
-        selected.extend([selected[-1]] * (num_frames - len(selected)))
     return selected[:num_frames]
 
 
@@ -196,8 +216,6 @@ def encode_video_sampled_frames(video_path: Path, num_frames: int, max_side: int
         if ok and frame_bgr is not None:
             data_urls.append(encode_image_array(frame_bgr, max_side=max_side, jpeg_quality=jpeg_quality))
     cap.release()
-    if data_urls and len(data_urls) < num_frames:
-        data_urls.extend([data_urls[-1]] * (num_frames - len(data_urls)))
     return data_urls[:num_frames]
 
 
@@ -247,14 +265,15 @@ def sample_media_payload(args, sample_id: str) -> Tuple[List[Dict[str, object]],
     )
 
 
-def prompt_text(sample_id: str, media_info: Dict[str, object]) -> str:
+def prompt_text(media_info: Dict[str, object]) -> str:
     frame_count = media_info.get("num_frames")
-    frame_text = f"{frame_count} uniformly sampled frames" if frame_count else "one local video"
+    frame_text = f"{frame_count} frame images sampled across the full utterance" if frame_count else "one local video"
     return (
         "You are helping build non-oracle text for a Japanese Sign Language emotion dataset.\n"
         f"The input contains {frame_text} from one eJSL utterance clip, in temporal order.\n"
-        "Task: infer the signed utterance and write a concise natural Japanese sentence.\n"
-        "Do not use or infer anything from the file name, sample ID, dataset label, or any oracle transcript.\n"
+        "Task: infer the signed utterance and write exactly one concise natural Japanese sentence for this clip.\n"
+        "Do not write a dialogue summary, a label, or an explanation.\n"
+        "No filename, sample ID, dataset label, speaker name, or oracle transcript is available to you; use only the visual input.\n"
         "If the signs are not readable, give the most likely short Japanese description and lower confidence.\n"
         "Return only one JSON object with these keys:\n"
         "{"
@@ -263,8 +282,7 @@ def prompt_text(sample_id: str, media_info: Dict[str, object]) -> str:
         "\"confidence\": number between 0 and 1, "
         "\"visual_notes\": string, "
         "\"uncertain\": boolean"
-        "}.\n"
-        f"Internal sample ID for bookkeeping only: {sample_id}"
+        "}."
     )
 
 
@@ -315,7 +333,7 @@ def chat_completion(
     media_payload: List[Dict[str, object]],
     media_info: Dict[str, object],
 ) -> Dict[str, object]:
-    content: List[Dict[str, object]] = [{"type": "text", "text": prompt_text(sample_id, media_info)}]
+    content: List[Dict[str, object]] = [{"type": "text", "text": prompt_text(media_info)}]
     content.extend(media_payload)
     payload: Dict[str, object] = {
         "model": model,
@@ -509,6 +527,72 @@ def summarize_rows(rows: Iterable[Dict[str, object]]) -> Dict[str, object]:
     }
 
 
+def text_ja_from_row(row: Dict[str, object]) -> str:
+    parsed = row.get("parsed")
+    if isinstance(parsed, dict):
+        text = sanitize_generated_text(str(parsed.get("text_ja", "")))
+        if text:
+            return text
+    return ""
+
+
+def write_model_txt_tree(
+    sample_ids: List[str],
+    rows: Iterable[Dict[str, object]],
+    structure_txt_root: Path,
+    output_txt_root: Path,
+) -> None:
+    translations: Dict[str, str] = {}
+    errors: List[str] = []
+    for row in rows:
+        sample_id = str(row.get("sample_id", "")).strip()
+        if not sample_id:
+            continue
+        if row.get("status") != "ok":
+            errors.append(f"{sample_id}: status={row.get('status')} error={row.get('error', '')}")
+            continue
+        text = text_ja_from_row(row)
+        if not text:
+            errors.append(f"{sample_id}: missing parsed text_ja")
+            continue
+        translations[sample_id] = text
+
+    missing = [sample_id for sample_id in sample_ids if sample_id not in translations]
+    if missing or errors:
+        preview = "; ".join((missing[:5] + errors[:5]))
+        raise RuntimeError(
+            f"Cannot write replacement txt tree: missing={len(missing)} errors={len(errors)} first={preview}"
+        )
+
+    grouped: Dict[Tuple[str, int], Dict[int, str]] = defaultdict(dict)
+    for sample_id in sample_ids:
+        sd_id, dialogue_idx, utterance_idx, _label = parse_ejsl_sample_id(sample_id)
+        grouped[(sd_id, dialogue_idx)][utterance_idx] = translations[sample_id]
+
+    for (sd_id, dialogue_idx), items in grouped.items():
+        structure_file = structure_txt_root / sd_id / "txt" / f"{sd_id}-Dialogue-{dialogue_idx:02d}.txt"
+        if not structure_file.exists():
+            raise FileNotFoundError(f"Missing structure txt file: {structure_file}")
+        structure = read_dialogue_structure(structure_file)
+        max_utt = max(items)
+        if max_utt > len(structure):
+            raise RuntimeError(f"{structure_file} has {len(structure)} turns, but sample needs turn {max_utt}")
+        missing_turns = [idx for idx in range(1, max_utt + 1) if idx not in items]
+        if missing_turns:
+            raise RuntimeError(
+                f"Cannot write {sd_id}-Dialogue-{dialogue_idx:02d}: missing turns {missing_turns[:10]}"
+            )
+
+        out_file = output_txt_root / sd_id / "txt" / f"{sd_id}-Dialogue-{dialogue_idx:02d}.txt"
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        lines = []
+        for idx in range(1, max_utt + 1):
+            speaker = structure[idx - 1]["speaker"]
+            emotion = structure[idx - 1]["emotion"]
+            lines.append(f"{speaker}|{emotion}|{items[idx]}")
+        out_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main():
     args = parse_args()
     models = args.model or DEFAULT_MODELS
@@ -642,10 +726,27 @@ def main():
 
         review_path = reviews_dir / f"review_{model_name}.csv"
         write_review_csv(review_path, model_rows)
+
+        txt_tree_root = ""
+        if args.write_txt_tree:
+            if not args.output_txt_root:
+                raise RuntimeError("--write_txt_tree requires --output_txt_root")
+            txt_tree_path = Path(args.output_txt_root)
+            if len(models) > 1:
+                txt_tree_path = txt_tree_path / model_name
+            write_model_txt_tree(
+                sample_ids,
+                model_rows,
+                structure_txt_root=Path(args.structure_txt_root),
+                output_txt_root=txt_tree_path,
+            )
+            txt_tree_root = str(txt_tree_path)
+
         all_summary["models"][model] = {
             **summarize_rows(model_rows),
             "responses_jsonl": str(jsonl_path),
             "review_csv": str(review_path),
+            "txt_tree_root": txt_tree_root,
         }
 
     summary_path = out_root / "cost_summary.json"
