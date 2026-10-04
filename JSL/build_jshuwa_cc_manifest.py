@@ -35,6 +35,15 @@ def parse_args():
         default="18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best",
     )
     parser.add_argument("--extractor_args", type=str, default="youtube:player_client=android_vr")
+    parser.add_argument(
+        "--extractor_args_candidates",
+        type=str,
+        default="",
+        help=(
+            "Semicolon-separated yt-dlp --extractor-args fallback list. "
+            "When empty, only --extractor_args is used."
+        ),
+    )
     parser.add_argument("--cookies", type=str, default="")
     parser.add_argument("--cookies_from_browser", type=str, default="")
     parser.add_argument("--sleep_interval", type=float, default=2.0)
@@ -61,14 +70,39 @@ def run_cmd(cmd: List[str]) -> bool:
     return result.returncode == 0
 
 
-def ytdlp_common_args(args) -> List[str]:
+def split_candidates(text: str) -> List[str]:
+    out = []
+    for part in str(text or "").split(";"):
+        value = part.strip()
+        if value:
+            out.append(value)
+    return out
+
+
+def extractor_arg_candidates(args) -> List[str]:
+    candidates = split_candidates(args.extractor_args_candidates)
+    if not candidates and args.extractor_args:
+        candidates = [args.extractor_args]
+    if not candidates:
+        candidates = [""]
+
+    seen = set()
+    deduped = []
+    for item in candidates:
+        if item not in seen:
+            deduped.append(item)
+            seen.add(item)
+    return deduped
+
+
+def ytdlp_common_args(args, extractor_args: str = "") -> List[str]:
     cmd = [args.yt_dlp_bin]
     if not args.use_ytdlp_config:
         cmd.append("--ignore-config")
     if args.verbose_ytdlp:
         cmd.append("--verbose")
-    if args.extractor_args:
-        cmd += ["--extractor-args", args.extractor_args]
+    if extractor_args:
+        cmd += ["--extractor-args", extractor_args]
     if args.cookies:
         cmd += ["--cookies", args.cookies]
     if args.cookies_from_browser:
@@ -113,21 +147,25 @@ def ensure_video(args, yid: str) -> Optional[Path]:
     if not args.download_videos:
         return None
 
-    ok = run_cmd(
-        ytdlp_common_args(args)
-        + [
-            "--no-playlist",
-            "--continue",
-            "-f",
-            args.video_format,
-            "-o",
-            str(video_dir / "%(id)s.%(ext)s"),
-            youtube_url(yid),
-        ]
-    )
-    if not ok:
-        return None
-    return find_video(video_dir, yid)
+    for extractor_args in extractor_arg_candidates(args):
+        label = extractor_args or "<default>"
+        print(f"[yt-dlp][video] yid={yid} extractor_args={label}")
+        ok = run_cmd(
+            ytdlp_common_args(args, extractor_args)
+            + [
+                "--no-playlist",
+                "--continue",
+                "-f",
+                args.video_format,
+                "-o",
+                str(video_dir / "%(id)s.%(ext)s"),
+                youtube_url(yid),
+            ]
+        )
+        existing = find_video(video_dir, yid)
+        if ok and existing is not None:
+            return existing
+    return None
 
 
 def find_vtt_files(subtitle_dir: Path, yid: str) -> List[Path]:
@@ -144,25 +182,29 @@ def ensure_subtitles(args, yid: str) -> List[Path]:
     if not args.download_subtitles:
         return []
 
-    ok = run_cmd(
-        ytdlp_common_args(args)
-        + [
-            "--no-playlist",
-            "--skip-download",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            args.subtitle_langs,
-            "--sub-format",
-            "vtt",
-            "-o",
-            str(subtitle_dir / "%(id)s.%(ext)s"),
-            youtube_url(yid),
-        ]
-    )
-    if not ok:
-        return []
-    return find_vtt_files(subtitle_dir, yid)
+    for extractor_args in extractor_arg_candidates(args):
+        label = extractor_args or "<default>"
+        print(f"[yt-dlp][subs] yid={yid} extractor_args={label}")
+        ok = run_cmd(
+            ytdlp_common_args(args, extractor_args)
+            + [
+                "--no-playlist",
+                "--skip-download",
+                "--write-subs",
+                "--write-auto-subs",
+                "--sub-langs",
+                args.subtitle_langs,
+                "--sub-format",
+                "vtt",
+                "-o",
+                str(subtitle_dir / "%(id)s.%(ext)s"),
+                youtube_url(yid),
+            ]
+        )
+        existing = find_vtt_files(subtitle_dir, yid)
+        if ok and existing:
+            return existing
+    return []
 
 
 def time_to_seconds(text: str) -> float:

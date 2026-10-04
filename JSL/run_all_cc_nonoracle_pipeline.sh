@@ -29,6 +29,7 @@ STRUCTURE_TXT_ROOT=${STRUCTURE_TXT_ROOT:-/raid_elmo/home/lr/wangyi/PTR/STUDIES-J
 BASE_MODEL=${BASE_MODEL:-Qwen/Qwen3-1.7B}
 GPU=${GPU:-0}
 YTDLP_EXTRACTOR_ARGS=${YTDLP_EXTRACTOR_ARGS:-youtube:player_client=android_vr}
+YTDLP_EXTRACTOR_ARGS_CANDIDATES=${YTDLP_EXTRACTOR_ARGS_CANDIDATES:-"youtube:player_client=android_vr;youtube:player_client=android;youtube:player_client=ios;youtube:player_client=web;youtube:player_client=mweb"}
 YTDLP_VIDEO_FORMAT=${YTDLP_VIDEO_FORMAT:-18/best[height<=360][ext=mp4]/best[height<=480][ext=mp4]/best}
 YTDLP_SLEEP_INTERVAL=${YTDLP_SLEEP_INTERVAL:-2}
 YTDLP_MAX_SLEEP_INTERVAL=${YTDLP_MAX_SLEEP_INTERVAL:-8}
@@ -80,6 +81,7 @@ python JSL/build_jshuwa_cc_manifest.py \
   --source cc \
   --video_format "$YTDLP_VIDEO_FORMAT" \
   --extractor_args "$YTDLP_EXTRACTOR_ARGS" \
+  --extractor_args_candidates "$YTDLP_EXTRACTOR_ARGS_CANDIDATES" \
   --sleep_interval "$YTDLP_SLEEP_INTERVAL" \
   --max_sleep_interval "$YTDLP_MAX_SLEEP_INTERVAL" \
   --retries "$YTDLP_RETRIES" \
