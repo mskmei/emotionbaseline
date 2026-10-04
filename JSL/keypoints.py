@@ -114,11 +114,11 @@ def extract_holistic_keypoints_from_frames(
     min_detection_confidence: float = 0.5,
     min_tracking_confidence: float = 0.5,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    import mediapipe as mp
+    holistic_cls = load_mediapipe_holistic()
 
     keypoints = []
     timestamps = []
-    with mp.solutions.holistic.Holistic(
+    with holistic_cls(
         static_image_mode=False,
         model_complexity=int(model_complexity),
         smooth_landmarks=True,
@@ -135,6 +135,33 @@ def extract_holistic_keypoints_from_frames(
     if not keypoints:
         raise RuntimeError("MediaPipe received no frames")
     return np.stack(keypoints, axis=0).astype(np.float32), np.asarray(timestamps, dtype=np.float32)
+
+
+def load_mediapipe_holistic():
+    try:
+        import mediapipe as mp
+    except ImportError as exc:
+        raise RuntimeError("mediapipe is required for JSL keypoint extraction.") from exc
+
+    solutions = getattr(mp, "solutions", None)
+    holistic = getattr(solutions, "holistic", None) if solutions is not None else None
+    holistic_cls = getattr(holistic, "Holistic", None) if holistic is not None else None
+    if holistic_cls is not None:
+        return holistic_cls
+
+    try:
+        from mediapipe.python.solutions.holistic import Holistic
+
+        return Holistic
+    except Exception as exc:
+        mp_file = getattr(mp, "__file__", "<unknown>")
+        mp_version = getattr(mp, "__version__", "<unknown>")
+        raise RuntimeError(
+            "Installed mediapipe does not expose the Holistic solutions API. "
+            f"mediapipe version={mp_version} file={mp_file}. "
+            "Try reinstalling a compatible package, e.g. `pip uninstall -y mediapipe && "
+            "pip install mediapipe==0.10.14` in the active environment."
+        ) from exc
 
 
 def extract_holistic_keypoints_from_video(
