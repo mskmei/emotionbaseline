@@ -185,6 +185,7 @@ class JSLQwenPrefixTranslator(nn.Module):
 
         prompt_embeds = embed(prompt_input_ids.clamp_min(0))
         target_embeds = embed(target_input_ids.clamp_min(0))
+        visual_embeds = visual_embeds.to(dtype=prompt_embeds.dtype)
         inputs_embeds = torch.cat([prompt_embeds, visual_embeds, target_embeds], dim=1)
 
         visual_mask = torch.ones(
@@ -221,7 +222,7 @@ class JSLQwenPrefixTranslator(nn.Module):
         embed = self.lm.get_input_embeddings()
         prompt_ids = self.prompt_ids(device=device).unsqueeze(0).expand(batch_size, -1)
         prompt_embeds = embed(prompt_ids)
-        visual_embeds = self._visual_embeds(keypoints)
+        visual_embeds = self._visual_embeds(keypoints).to(dtype=prompt_embeds.dtype)
         inputs_embeds = torch.cat([prompt_embeds, visual_embeds], dim=1)
         attention_mask = torch.ones(inputs_embeds.shape[:2], dtype=torch.long, device=device)
 
