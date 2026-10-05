@@ -59,6 +59,15 @@ def strip_thinking(text: str) -> str:
     return text.replace("<think>", "").replace("</think>", "").strip()
 
 
+def transformers_version() -> str:
+    try:
+        import transformers
+
+        return str(getattr(transformers, "__version__", "<unknown>"))
+    except Exception:
+        return "<not importable>"
+
+
 class JSLQwenPrefixTranslator(nn.Module):
     def __init__(
         self,
@@ -86,7 +95,16 @@ class JSLQwenPrefixTranslator(nn.Module):
         self.lora_target_modules = lora_target_modules
 
         tok_source = str(tokenizer_path) if tokenizer_path is not None else base_model
-        self.tokenizer = AutoTokenizer.from_pretrained(tok_source, trust_remote_code=True)
+        try:
+            self.tokenizer = AutoTokenizer.from_pretrained(tok_source, trust_remote_code=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load tokenizer from {tok_source!r} for base_model={base_model!r}. "
+                f"Current transformers version is {transformers_version()}. "
+                "Qwen3 requires a recent transformers release; in this environment run "
+                "`pip install -U 'transformers>=4.51.0' tokenizers accelerate sentencepiece protobuf` "
+                "or use an older base model such as `BASE_MODEL=Qwen/Qwen2.5-1.5B-Instruct`."
+            ) from exc
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
