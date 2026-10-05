@@ -2,10 +2,10 @@ CUDA_VISIBLE_DEVICES=0 python JSL/train_jsl_translation.py \
   --manifest_csv /raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/manifests/jshuwa_cc_train_keypoints.csv \
   --output_dir /raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/models/qwen3_jsl_lora_cc \
   --base_model Qwen/Qwen3-1.7B \
-  --epochs 5 \
+  --epochs 10 \
   --batch_size 2 \
   --gradient_accumulation_steps 8 \
-  --lr 1e-4 \
+  --lr 5e-5 \
   --num_visual_tokens 64 \
   --max_target_tokens 96 \
   --bf16
