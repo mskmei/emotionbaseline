@@ -25,4 +25,5 @@ CUDA_VISIBLE_DEVICES=0 python JSL/generate_ejsl_non_oracle_txt.py \
   --max_frames 0 \
   --model_complexity 1 \
   --max_new_tokens 64 \
+  --temperature 0.0 \
   --resume
