@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -79,7 +80,18 @@ def extract_or_load_keypoints(args, sample_id: str, media_kind: str, media_path:
     cache_dir = Path(args.keypoint_cache_dir) if args.keypoint_cache_dir else None
     cache_path = cache_dir / f"{sample_id}.npz" if cache_dir is not None else None
     if cache_path is not None and args.resume and cache_path.exists():
-        return np.asarray(np.load(cache_path)["keypoints"], dtype=np.float32)
+        try:
+            with np.load(cache_path) as data:
+                keypoints = np.asarray(data["keypoints"], dtype=np.float32)
+            if keypoints.ndim != 2 or keypoints.shape[0] == 0:
+                raise RuntimeError(f"invalid keypoint array shape={keypoints.shape}")
+            return keypoints
+        except Exception as exc:
+            print(f"[eJSL][cache] bad cache for {sample_id}: {cache_path} ({exc}); recomputing")
+            try:
+                cache_path.unlink()
+            except FileNotFoundError:
+                pass
 
     if media_kind == "video":
         keypoints, timestamps = extract_holistic_keypoints_from_video(
@@ -98,7 +110,13 @@ def extract_or_load_keypoints(args, sample_id: str, media_kind: str, media_path:
 
     if cache_path is not None:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache_path, keypoints=keypoints, timestamps=timestamps, sample_id=sample_id, media_path=str(media_path))
+        tmp_path = cache_path.with_name(f"{cache_path.name}.tmp.{os.getpid()}.npz")
+        try:
+            np.savez_compressed(tmp_path, keypoints=keypoints, timestamps=timestamps, sample_id=sample_id, media_path=str(media_path))
+            os.replace(tmp_path, cache_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink()
     return keypoints
 
 
