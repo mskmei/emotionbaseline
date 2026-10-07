@@ -25,6 +25,7 @@ MAX_TOKENS=${MAX_TOKENS:-256}
 TEMPERATURE=${TEMPERATURE:-0.0}
 TOP_P=${TOP_P:-1.0}
 REASONING_EFFORT=${REASONING_EFFORT:-}
+ANTHROPIC_REASONING_EFFORT=${ANTHROPIC_REASONING_EFFORT:-low}
 DISABLE_REASONING=${DISABLE_REASONING:-1}
 SLEEP_SEC=${SLEEP_SEC:-0.3}
 RESUME=${RESUME:-1}
@@ -72,6 +73,7 @@ python JSL/openrouter_ejsl_video_text.py \
   --temperature "$TEMPERATURE" \
   --top_p "$TOP_P" \
   --reasoning_effort "$REASONING_EFFORT" \
+  --anthropic_reasoning_effort "$ANTHROPIC_REASONING_EFFORT" \
   "${REASONING_FLAGS[@]}" \
   --response_mode plain_translation \
   --structure_txt_root "$STRUCTURE_TXT_ROOT" \
