@@ -445,6 +445,10 @@ def fetch_generation(api_key: str, generation_id: str, retries: int, sleep_sec: 
 
 
 def response_text(response: Dict[str, object]) -> str:
+    for key in ("output_text", "text"):
+        value = response.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
     choices = response.get("choices")
     if not isinstance(choices, list) or not choices:
         return ""
@@ -452,16 +456,26 @@ def response_text(response: Dict[str, object]) -> str:
     if not isinstance(message, dict):
         return ""
     content = message.get("content", "")
-    if content is None:
-        return ""
+    fallback_chunks = []
+    for key in ("output_text", "text"):
+        value = message.get(key)
+        if isinstance(value, str) and value.strip():
+            fallback_chunks.append(value)
     if isinstance(content, str):
-        return content
+        return content if content.strip() else "\n".join(fallback_chunks)
     if isinstance(content, list):
         chunks = []
         for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") in {"text", "output_text"}:
                 chunks.append(str(item.get("text", "")))
-        return "\n".join(chunks)
+            elif isinstance(item.get("text"), str):
+                chunks.append(str(item.get("text", "")))
+        joined = "\n".join(x for x in chunks if x.strip())
+        return joined if joined else "\n".join(fallback_chunks)
+    if content is None:
+        return "\n".join(fallback_chunks)
     return str(content)
 
 
@@ -795,12 +809,17 @@ def main():
         for index, sample_id in enumerate(sample_ids, start=1):
             if sample_id in done:
                 continue
+            media_info: Dict[str, object] = {}
+            response: Dict[str, object] = {}
+            text = ""
+            parsed: Dict[str, object] = {}
+            generation_id = ""
+            generation_info: Dict[str, object] = {}
             try:
                 media_payload, media_info = sample_media_payload(args, sample_id)
                 response = chat_completion(args, api_key, model, sample_id, media_payload, media_info)
                 text = response_text(response)
                 parsed = parse_response_text(args, text)
-                require_parsed_text(args, parsed, text)
                 generation_id = str(response.get("id", ""))
                 generation_info = fetch_generation(
                     api_key,
@@ -808,6 +827,7 @@ def main():
                     retries=args.generation_poll_retries,
                     sleep_sec=args.generation_poll_sleep,
                 )
+                require_parsed_text(args, parsed, text)
                 try:
                     _sd_id, _dialogue_idx, _utterance_idx, gold_label = parse_ejsl_sample_id(sample_id)
                 except Exception:
@@ -831,6 +851,13 @@ def main():
                     "model": model,
                     "sample_id": sample_id,
                     "gold_label": sample_id[-1:],
+                    "media": media_info,
+                    "raw_text": text,
+                    "parsed": parsed,
+                    "generation_id": generation_id,
+                    "response_usage": response.get("usage", {}) if isinstance(response, dict) else {},
+                    "response": response,
+                    "generation_info": generation_info,
                     "error": str(exc),
                 }
                 if args.fail_fast:
