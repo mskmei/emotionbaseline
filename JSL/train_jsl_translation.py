@@ -98,6 +98,12 @@ def parse_args():
     parser.add_argument("--manifest_csv", type=str, required=True)
     parser.add_argument("--output_dir", type=str, required=True)
     parser.add_argument("--base_model", type=str, default="Qwen/Qwen3-1.7B")
+    parser.add_argument(
+        "--init_model_dir",
+        type=str,
+        default="",
+        help="Optional existing JSLQwenPrefixTranslator directory to continue fine-tuning from.",
+    )
     parser.add_argument("--train_split", type=str, default="train")
     parser.add_argument("--valid_split", type=str, default="")
     parser.add_argument("--num_visual_tokens", type=int, default=64)
@@ -154,18 +160,30 @@ def main():
     seed_everything(args.seed)
 
     dtype_arg = "bf16" if args.bf16 else "fp16" if args.fp16 else args.torch_dtype
-    model = JSLQwenPrefixTranslator(
-        base_model=args.base_model,
-        keypoint_dim=KEYPOINT_DIM,
-        num_visual_tokens=args.num_visual_tokens,
-        projector_hidden=args.projector_hidden,
-        torch_dtype=dtype_arg,
-        load_in_4bit=args.load_in_4bit,
-        lora_r=args.lora_r,
-        lora_alpha=args.lora_alpha,
-        lora_dropout=args.lora_dropout,
-        lora_target_modules=args.lora_target_modules,
-    )
+    if args.init_model_dir:
+        model = JSLQwenPrefixTranslator.from_pretrained(
+            args.init_model_dir,
+            torch_dtype=dtype_arg,
+            load_in_4bit=args.load_in_4bit,
+            adapter_is_trainable=True,
+        )
+        if int(args.num_visual_tokens) != int(model.num_visual_tokens):
+            raise RuntimeError(
+                f"--num_visual_tokens={args.num_visual_tokens} but init model uses {model.num_visual_tokens}"
+            )
+    else:
+        model = JSLQwenPrefixTranslator(
+            base_model=args.base_model,
+            keypoint_dim=KEYPOINT_DIM,
+            num_visual_tokens=args.num_visual_tokens,
+            projector_hidden=args.projector_hidden,
+            torch_dtype=dtype_arg,
+            load_in_4bit=args.load_in_4bit,
+            lora_r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            lora_target_modules=args.lora_target_modules,
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not args.load_in_4bit:

@@ -84,6 +84,7 @@ class JSLQwenPrefixTranslator(nn.Module):
         gradient_checkpointing: bool = True,
         adapter_path: Optional[Path] = None,
         tokenizer_path: Optional[Path] = None,
+        adapter_is_trainable: bool = False,
     ):
         super().__init__()
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -136,7 +137,11 @@ class JSLQwenPrefixTranslator(nn.Module):
         if adapter_path is not None:
             from peft import PeftModel
 
-            self.lm = PeftModel.from_pretrained(self.lm, str(adapter_path), is_trainable=False)
+            self.lm = PeftModel.from_pretrained(self.lm, str(adapter_path), is_trainable=bool(adapter_is_trainable))
+            if adapter_is_trainable and gradient_checkpointing and hasattr(self.lm, "gradient_checkpointing_enable"):
+                self.lm.gradient_checkpointing_enable()
+                if hasattr(self.lm.config, "use_cache"):
+                    self.lm.config.use_cache = False
         else:
             from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
 
@@ -292,7 +297,13 @@ class JSLQwenPrefixTranslator(nn.Module):
         (output_dir / "jsl_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     @classmethod
-    def from_pretrained(cls, model_dir: str | Path, torch_dtype: str = "auto", load_in_4bit: bool = False):
+    def from_pretrained(
+        cls,
+        model_dir: str | Path,
+        torch_dtype: str = "auto",
+        load_in_4bit: bool = False,
+        adapter_is_trainable: bool = False,
+    ):
         model_dir = Path(model_dir)
         config_path = model_dir / "jsl_config.json"
         if not config_path.exists():
@@ -307,6 +318,7 @@ class JSLQwenPrefixTranslator(nn.Module):
             load_in_4bit=load_in_4bit,
             adapter_path=model_dir / "qwen_lora",
             tokenizer_path=model_dir,
+            adapter_is_trainable=adapter_is_trainable,
         )
         state = torch.load(model_dir / "projector.pt", map_location="cpu")
         model.projector.load_state_dict(state)

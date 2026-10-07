@@ -33,8 +33,15 @@ def write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "checkpoint",
+        "corpus_bleu1_char",
+        "corpus_bleu2_char",
         "corpus_bleu4_char",
+        "mean_sentence_bleu1_char",
+        "mean_sentence_bleu2_char",
         "mean_sentence_bleu4_char",
+        "mean_rouge1_f1_char",
+        "mean_rouge2_f1_char",
+        "mean_rougeL_f1_char",
         "mean_char_f1",
         "mean_edit_similarity",
         "mean_gt_len",
