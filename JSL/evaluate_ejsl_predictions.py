@@ -51,6 +51,12 @@ def ngrams(tokens: List[str], n: int) -> Counter[Tuple[str, ...]]:
     return Counter(tuple(tokens[i : i + n]) for i in range(0, max(0, len(tokens) - n + 1)))
 
 
+def f1_from_precision_recall(precision: float, recall: float) -> float:
+    if precision + recall == 0:
+        return 0.0
+    return 2.0 * precision * recall / (precision + recall)
+
+
 def sentence_bleu_char(pred: str, ref: str, max_order: int = 4, smooth: float = 1.0) -> float:
     pred_toks = char_tokens(pred)
     ref_toks = char_tokens(ref)
@@ -94,6 +100,43 @@ def corpus_bleu_char(pairs: Iterable[Tuple[str, str]], max_order: int = 4, smoot
     return bp * geo
 
 
+def rouge_n_f1_char(pred: str, ref: str, n: int) -> float:
+    pred_ng = ngrams(char_tokens(pred), n)
+    ref_ng = ngrams(char_tokens(ref), n)
+    if not pred_ng or not ref_ng:
+        return 0.0
+    overlap = sum(min(count, ref_ng.get(ng, 0)) for ng, count in pred_ng.items())
+    precision = overlap / max(sum(pred_ng.values()), 1)
+    recall = overlap / max(sum(ref_ng.values()), 1)
+    return f1_from_precision_recall(precision, recall)
+
+
+def lcs_length(xs: List[str], ys: List[str]) -> int:
+    if not xs or not ys:
+        return 0
+    prev = [0] * (len(ys) + 1)
+    for x in xs:
+        cur = [0]
+        for j, y in enumerate(ys, start=1):
+            if x == y:
+                cur.append(prev[j - 1] + 1)
+            else:
+                cur.append(max(prev[j], cur[-1]))
+        prev = cur
+    return prev[-1]
+
+
+def rouge_l_f1_char(pred: str, ref: str) -> float:
+    pred_toks = char_tokens(pred)
+    ref_toks = char_tokens(ref)
+    if not pred_toks or not ref_toks:
+        return 0.0
+    overlap = lcs_length(pred_toks, ref_toks)
+    precision = overlap / max(len(pred_toks), 1)
+    recall = overlap / max(len(ref_toks), 1)
+    return f1_from_precision_recall(precision, recall)
+
+
 def char_f1(pred: str, ref: str) -> float:
     pred_counts = Counter(char_tokens(pred))
     ref_counts = Counter(char_tokens(ref))
@@ -102,9 +145,7 @@ def char_f1(pred: str, ref: str) -> float:
     overlap = sum(min(count, ref_counts.get(ch, 0)) for ch, count in pred_counts.items())
     precision = overlap / max(sum(pred_counts.values()), 1)
     recall = overlap / max(sum(ref_counts.values()), 1)
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
+    return f1_from_precision_recall(precision, recall)
 
 
 def edit_similarity(pred: str, ref: str) -> float:
@@ -154,7 +195,12 @@ def write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
         "emotion",
         "gt",
         "pred",
+        "bleu1_char",
+        "bleu2_char",
         "bleu4_char",
+        "rouge1_f1_char",
+        "rouge2_f1_char",
+        "rougeL_f1_char",
         "char_f1",
         "edit_similarity",
         "gt_len",
@@ -194,7 +240,12 @@ def main():
                 "emotion": emotion,
                 "gt": ref,
                 "pred": pred,
+                "bleu1_char": sentence_bleu_char(pred, ref, max_order=1),
+                "bleu2_char": sentence_bleu_char(pred, ref, max_order=2),
                 "bleu4_char": sentence_bleu_char(pred, ref),
+                "rouge1_f1_char": rouge_n_f1_char(pred, ref, n=1),
+                "rouge2_f1_char": rouge_n_f1_char(pred, ref, n=2),
+                "rougeL_f1_char": rouge_l_f1_char(pred, ref),
                 "char_f1": char_f1(pred, ref),
                 "edit_similarity": edit_similarity(pred, ref),
                 "gt_len": len(char_tokens(ref)),
@@ -213,8 +264,15 @@ def main():
         "n_scored": len(rows),
         "n_missing": len(missing),
         "missing_first": missing[:20],
+        "corpus_bleu1_char": corpus_bleu_char(pairs, max_order=1),
+        "corpus_bleu2_char": corpus_bleu_char(pairs, max_order=2),
         "corpus_bleu4_char": corpus_bleu_char(pairs),
+        "mean_sentence_bleu1_char": sum(float(r["bleu1_char"]) for r in rows) / len(rows),
+        "mean_sentence_bleu2_char": sum(float(r["bleu2_char"]) for r in rows) / len(rows),
         "mean_sentence_bleu4_char": sum(float(r["bleu4_char"]) for r in rows) / len(rows),
+        "mean_rouge1_f1_char": sum(float(r["rouge1_f1_char"]) for r in rows) / len(rows),
+        "mean_rouge2_f1_char": sum(float(r["rouge2_f1_char"]) for r in rows) / len(rows),
+        "mean_rougeL_f1_char": sum(float(r["rougeL_f1_char"]) for r in rows) / len(rows),
         "mean_char_f1": sum(float(r["char_f1"]) for r in rows) / len(rows),
         "mean_edit_similarity": sum(float(r["edit_similarity"]) for r in rows) / len(rows),
         "mean_gt_len": sum(int(r["gt_len"]) for r in rows) / len(rows),

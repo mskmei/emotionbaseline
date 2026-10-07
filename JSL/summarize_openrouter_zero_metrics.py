@@ -47,8 +47,15 @@ def main():
                 "model_name": model_name,
                 "n_scored": metrics.get("n_scored", ""),
                 "n_missing": metrics.get("n_missing", ""),
+                "corpus_bleu1_char": metrics.get("corpus_bleu1_char", ""),
+                "corpus_bleu2_char": metrics.get("corpus_bleu2_char", ""),
                 "corpus_bleu4_char": metrics.get("corpus_bleu4_char", ""),
+                "mean_sentence_bleu1_char": metrics.get("mean_sentence_bleu1_char", ""),
+                "mean_sentence_bleu2_char": metrics.get("mean_sentence_bleu2_char", ""),
                 "mean_sentence_bleu4_char": metrics.get("mean_sentence_bleu4_char", ""),
+                "mean_rouge1_f1_char": metrics.get("mean_rouge1_f1_char", ""),
+                "mean_rouge2_f1_char": metrics.get("mean_rouge2_f1_char", ""),
+                "mean_rougeL_f1_char": metrics.get("mean_rougeL_f1_char", ""),
                 "mean_char_f1": metrics.get("mean_char_f1", ""),
                 "mean_edit_similarity": metrics.get("mean_edit_similarity", ""),
                 "mean_gt_len": metrics.get("mean_gt_len", ""),
@@ -80,8 +87,15 @@ def main():
         "model_name",
         "n_scored",
         "n_missing",
+        "corpus_bleu1_char",
+        "corpus_bleu2_char",
         "corpus_bleu4_char",
+        "mean_sentence_bleu1_char",
+        "mean_sentence_bleu2_char",
         "mean_sentence_bleu4_char",
+        "mean_rouge1_f1_char",
+        "mean_rouge2_f1_char",
+        "mean_rougeL_f1_char",
         "mean_char_f1",
         "mean_edit_similarity",
         "mean_gt_len",
@@ -100,8 +114,10 @@ def main():
 
     for idx, row in enumerate(rows, start=1):
         print(
-            f"{idx:02d}. {row['model']} corpus_bleu4_char={row['corpus_bleu4_char']} "
-            f"char_f1={row['mean_char_f1']} cost={row['total_cost_usd']}"
+            f"{idx:02d}. {row['model']} "
+            f"bleu1={row['corpus_bleu1_char']} bleu2={row['corpus_bleu2_char']} "
+            f"bleu4={row['corpus_bleu4_char']} rougeL={row['mean_rougeL_f1_char']} "
+            f"cost={row['total_cost_usd']}"
         )
 
 
