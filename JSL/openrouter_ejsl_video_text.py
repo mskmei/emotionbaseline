@@ -95,6 +95,7 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=96)
     parser.add_argument("--reasoning_effort", type=str, default="minimal", help="Set empty string to omit.")
+    parser.add_argument("--disable_reasoning", action="store_true", help="Send reasoning.enabled=false for reasoning-capable models.")
     parser.add_argument("--response_mode", choices=["json", "plain_translation"], default="json")
     parser.add_argument("--api_key_env", type=str, default="OPENROUTER_API_KEY")
     parser.add_argument(
@@ -424,8 +425,11 @@ def chat_completion(
         "max_tokens": int(args.max_tokens),
         "usage": {"include": True},
     }
-    if args.reasoning_effort:
-        payload["reasoning"] = {"effort": args.reasoning_effort}
+    if args.disable_reasoning:
+        payload["reasoning"] = {"enabled": False, "exclude": True}
+        payload["include_reasoning"] = False
+    elif args.reasoning_effort:
+        payload["reasoning"] = {"effort": args.reasoning_effort, "exclude": True}
     return request_json("POST", f"{OPENROUTER_BASE_URL}/chat/completions", api_key, payload)
 
 
