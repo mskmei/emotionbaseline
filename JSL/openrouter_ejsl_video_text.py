@@ -452,6 +452,8 @@ def response_text(response: Dict[str, object]) -> str:
     if not isinstance(message, dict):
         return ""
     content = message.get("content", "")
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -499,6 +501,8 @@ def clean_plain_translation(text: str) -> str:
     lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     if len(lines) == 1:
         cleaned = lines[0]
+    if cleaned.lower() in {"none", "null", "nil", "n/a"}:
+        return ""
     return sanitize_generated_text(cleaned)
 
 
@@ -506,6 +510,12 @@ def parse_response_text(args, text: str) -> Dict[str, object]:
     if args.response_mode == "plain_translation":
         return {"text_ja": clean_plain_translation(text)}
     return extract_json_object(text)
+
+
+def require_parsed_text(args, parsed: Dict[str, object], raw_text: str) -> None:
+    text = sanitize_generated_text(str(parsed.get("text_ja", ""))) if isinstance(parsed, dict) else ""
+    if args.response_mode == "plain_translation" and not text:
+        raise RuntimeError(f"empty visible translation; raw_text={raw_text!r}")
 
 
 def value_from_nested(data: Dict[str, object], *keys: str) -> Optional[float]:
@@ -790,6 +800,7 @@ def main():
                 response = chat_completion(args, api_key, model, sample_id, media_payload, media_info)
                 text = response_text(response)
                 parsed = parse_response_text(args, text)
+                require_parsed_text(args, parsed, text)
                 generation_id = str(response.get("id", ""))
                 generation_info = fetch_generation(
                     api_key,

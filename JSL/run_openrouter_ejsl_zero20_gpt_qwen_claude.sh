@@ -26,6 +26,7 @@ TEMPERATURE=${TEMPERATURE:-0.0}
 TOP_P=${TOP_P:-1.0}
 REASONING_EFFORT=${REASONING_EFFORT:-}
 SLEEP_SEC=${SLEEP_SEC:-0.3}
+RESUME=${RESUME:-1}
 
 mkdir -p "$OUT_ROOT"
 
@@ -41,6 +42,11 @@ MODEL_FLAGS=()
 for model in $MODELS; do
   MODEL_FLAGS+=(--model "$model")
 done
+
+RESUME_FLAGS=()
+if [ "$RESUME" = "0" ]; then
+  RESUME_FLAGS+=(--no_resume)
+fi
 
 python JSL/openrouter_ejsl_video_text.py \
   --dial_list "$DIAL_LIST" \
@@ -62,7 +68,8 @@ python JSL/openrouter_ejsl_video_text.py \
   --reasoning_effort "$REASONING_EFFORT" \
   --response_mode plain_translation \
   --structure_txt_root "$STRUCTURE_TXT_ROOT" \
-  --sleep_sec "$SLEEP_SEC"
+  --sleep_sec "$SLEEP_SEC" \
+  "${RESUME_FLAGS[@]}"
 
 mkdir -p "$OUT_ROOT/metrics"
 for model in $MODELS; do
