@@ -16,7 +16,9 @@ MODELS=${MODELS:-"openai/gpt-5.6-sol qwen/qwen3-vl-235b-a22b-instruct anthropic/
 LIMIT=${LIMIT:-20}
 SELECTION=${SELECTION:-balanced}
 INPUT_MODE=${INPUT_MODE:-frames}
-NUM_FRAMES=${NUM_FRAMES:-16}
+SAMPLE_FPS=${SAMPLE_FPS:-4}
+FRAME_DIR_FPS=${FRAME_DIR_FPS:-4}
+NUM_FRAMES=${NUM_FRAMES:-48}
 IMAGE_MAX_SIDE=${IMAGE_MAX_SIDE:-512}
 JPEG_QUALITY=${JPEG_QUALITY:-70}
 MAX_TOKENS=${MAX_TOKENS:-64}
@@ -50,6 +52,8 @@ python JSL/openrouter_ejsl_video_text.py \
   --selection "$SELECTION" \
   --input_mode "$INPUT_MODE" \
   --num_frames "$NUM_FRAMES" \
+  --sample_fps "$SAMPLE_FPS" \
+  --frame_dir_fps "$FRAME_DIR_FPS" \
   --image_max_side "$IMAGE_MAX_SIDE" \
   --jpeg_quality "$JPEG_QUALITY" \
   --max_tokens "$MAX_TOKENS" \

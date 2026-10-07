@@ -76,6 +76,18 @@ def parse_args():
     parser.add_argument("--selection", type=str, default="balanced", choices=["balanced", "first"])
     parser.add_argument("--input_mode", type=str, default="frames", choices=["frames", "video"])
     parser.add_argument("--num_frames", type=int, default=32, help="Maximum frames sampled across the full utterance.")
+    parser.add_argument(
+        "--sample_fps",
+        type=float,
+        default=0.0,
+        help="When positive, sample frames across the full utterance at this FPS, then uniformly cap to --num_frames.",
+    )
+    parser.add_argument(
+        "--frame_dir_fps",
+        type=float,
+        default=4.0,
+        help="Assumed FPS for pre-extracted eJSL frame directories when --sample_fps is used.",
+    )
     parser.add_argument("--image_max_side", type=int, default=640)
     parser.add_argument("--jpeg_quality", type=int, default=78)
     parser.add_argument("--max_video_mb", type=float, default=18.0)
@@ -158,14 +170,24 @@ def sample_indices(length: int, count: int) -> np.ndarray:
     return np.linspace(0, length - 1, num=int(count), dtype=np.int64)
 
 
-def sample_frame_paths(frame_dir: Path, num_frames: int) -> List[Path]:
+def uniform_cap(items: List[object], max_items: int) -> List[object]:
+    if max_items <= 0 or len(items) <= max_items:
+        return items
+    return [items[int(i)] for i in sample_indices(len(items), max_items)]
+
+
+def sample_frame_paths(frame_dir: Path, num_frames: int, sample_fps: float = 0.0, frame_dir_fps: float = 4.0) -> List[Path]:
     paths = list_frame_paths(frame_dir)
     if not paths:
         return []
-    if len(paths) <= num_frames:
+    if sample_fps and sample_fps > 0:
+        assumed_fps = frame_dir_fps if frame_dir_fps and frame_dir_fps > 0 else sample_fps
+        step = max(int(round(float(assumed_fps) / float(sample_fps))), 1)
+        selected = paths[::step]
+        return uniform_cap(selected, num_frames)
+    if num_frames <= 0 or len(paths) <= num_frames:
         return paths
-    selected = [paths[int(i)] for i in sample_indices(len(paths), num_frames)]
-    return selected[:num_frames]
+    return [paths[int(i)] for i in sample_indices(len(paths), num_frames)]
 
 
 def find_video(video_root: Path, sample_id: str) -> Optional[Path]:
@@ -210,7 +232,13 @@ def encode_image_path(path: Path, max_side: int, jpeg_quality: int) -> str:
     return encode_image_array(image_bgr, max_side=max_side, jpeg_quality=jpeg_quality)
 
 
-def encode_video_sampled_frames(video_path: Path, num_frames: int, max_side: int, jpeg_quality: int) -> List[str]:
+def encode_video_sampled_frames(
+    video_path: Path,
+    num_frames: int,
+    max_side: int,
+    jpeg_quality: int,
+    sample_fps: float = 0.0,
+) -> List[str]:
     cv2 = import_cv2()
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -219,14 +247,25 @@ def encode_video_sampled_frames(video_path: Path, num_frames: int, max_side: int
     if frame_count <= 0:
         cap.release()
         raise RuntimeError(f"Video has no readable frames: {video_path}")
+    source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    if source_fps <= 0:
+        source_fps = 30.0
+    if sample_fps and sample_fps > 0:
+        step = max(int(round(source_fps / float(sample_fps))), 1)
+        indices = list(range(0, frame_count, step))
+        indices = [int(i) for i in uniform_cap(indices, num_frames)]
+    else:
+        count = int(num_frames) if int(num_frames) > 0 else frame_count
+        indices = [int(i) for i in sample_indices(frame_count, count)]
+
     data_urls: List[str] = []
-    for idx in sample_indices(frame_count, num_frames):
+    for idx in indices:
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, frame_bgr = cap.read()
         if ok and frame_bgr is not None:
             data_urls.append(encode_image_array(frame_bgr, max_side=max_side, jpeg_quality=jpeg_quality))
     cap.release()
-    return data_urls[:num_frames]
+    return data_urls[:num_frames] if num_frames > 0 else data_urls
 
 
 def encode_video_data_url(video_path: Path, max_mb: float) -> str:
@@ -253,7 +292,16 @@ def sample_media_payload(args, sample_id: str) -> Tuple[List[Dict[str, object]],
             {"media_kind": "video", "video_path": str(video_path), "num_frames": None},
         )
 
-    frame_paths = sample_frame_paths(frame_dir, args.num_frames) if frame_dir.exists() else []
+    frame_paths = (
+        sample_frame_paths(
+            frame_dir,
+            args.num_frames,
+            sample_fps=args.sample_fps,
+            frame_dir_fps=args.frame_dir_fps,
+        )
+        if frame_dir.exists()
+        else []
+    )
     if frame_paths:
         data_urls = [encode_image_path(path, args.image_max_side, args.jpeg_quality) for path in frame_paths]
         return (
@@ -268,7 +316,13 @@ def sample_media_payload(args, sample_id: str) -> Tuple[List[Dict[str, object]],
 
     if video_path is None:
         raise RuntimeError(f"No eJSL frame dir or video found for {sample_id}")
-    data_urls = encode_video_sampled_frames(video_path, args.num_frames, args.image_max_side, args.jpeg_quality)
+    data_urls = encode_video_sampled_frames(
+        video_path,
+        args.num_frames,
+        args.image_max_side,
+        args.jpeg_quality,
+        sample_fps=args.sample_fps,
+    )
     return (
         [{"type": "image_url", "image_url": {"url": url}} for url in data_urls],
         {"media_kind": "video_sampled_frames", "video_path": str(video_path), "num_frames": len(data_urls)},
@@ -713,6 +767,8 @@ def main():
         "video_root": args.video_root,
         "input_mode": args.input_mode,
         "num_frames": args.num_frames,
+        "sample_fps": args.sample_fps,
+        "frame_dir_fps": args.frame_dir_fps,
         "response_mode": args.response_mode,
         "limit": len(sample_ids),
         "selection": args.selection,
