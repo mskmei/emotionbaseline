@@ -30,6 +30,15 @@ from manifest_utils import (
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODELS = ["google/gemini-3.5-flash", "google/gemini-3-pro-preview"]
+PLAIN_TRANSLATION_PROMPT = """Translate the Japanese Sign Language in this video into natural Japanese.
+
+Output only the linguistic content expressed in the signing.
+
+Do not describe facial expressions, emotions, gestures, appearance, or the scene.
+Do not infer content from context or emotion.
+Do not add information that is not explicitly conveyed by the signing.
+
+Output only the Japanese translation."""
 LABELS = ["A", "N", "J", "S"]
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
@@ -74,6 +83,7 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=1.0)
     parser.add_argument("--max_tokens", type=int, default=96)
     parser.add_argument("--reasoning_effort", type=str, default="minimal", help="Set empty string to omit.")
+    parser.add_argument("--response_mode", choices=["json", "plain_translation"], default="json")
     parser.add_argument("--api_key_env", type=str, default="OPENROUTER_API_KEY")
     parser.add_argument(
         "--structure_txt_root",
@@ -265,7 +275,10 @@ def sample_media_payload(args, sample_id: str) -> Tuple[List[Dict[str, object]],
     )
 
 
-def prompt_text(media_info: Dict[str, object]) -> str:
+def prompt_text(args, media_info: Dict[str, object]) -> str:
+    if args.response_mode == "plain_translation":
+        return PLAIN_TRANSLATION_PROMPT
+
     frame_count = media_info.get("num_frames")
     frame_text = f"{frame_count} frame images sampled across the full utterance" if frame_count else "one local video"
     return (
@@ -331,17 +344,24 @@ def chat_completion(
     media_payload: List[Dict[str, object]],
     media_info: Dict[str, object],
 ) -> Dict[str, object]:
-    content: List[Dict[str, object]] = [{"type": "text", "text": prompt_text(media_info)}]
+    content: List[Dict[str, object]] = [{"type": "text", "text": prompt_text(args, media_info)}]
     content.extend(media_payload)
+    if args.response_mode == "plain_translation":
+        system_content = (
+            "You translate visual Japanese Sign Language clips into Japanese. "
+            "Return only the Japanese translation text, with no explanation."
+        )
+    else:
+        system_content = (
+            "You translate visual Japanese Sign Language clips into concise Japanese. "
+            "Answer with valid JSON only."
+        )
     payload: Dict[str, object] = {
         "model": model,
         "messages": [
             {
                 "role": "system",
-                "content": (
-                    "You translate visual Japanese Sign Language clips into concise Japanese. "
-                    "Answer with valid JSON only."
-                ),
+                "content": system_content,
             },
             {"role": "user", "content": content},
         ],
@@ -408,6 +428,30 @@ def extract_json_object(text: str) -> Dict[str, object]:
         except Exception:
             return {}
     return {}
+
+
+def clean_plain_translation(text: str) -> str:
+    cleaned = str(text or "").strip()
+    end = cleaned.rfind("</think>")
+    if end >= 0:
+        cleaned = cleaned[end + len("</think>") :].strip()
+    cleaned = cleaned.replace("<think>", "").replace("</think>", "").strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:\w+)?\s*", "", cleaned, flags=re.IGNORECASE).strip()
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    for prefix in ("日本語訳:", "翻訳:", "訳:", "Output:", "Translation:"):
+        if cleaned.startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    if len(lines) == 1:
+        cleaned = lines[0]
+    return sanitize_generated_text(cleaned)
+
+
+def parse_response_text(args, text: str) -> Dict[str, object]:
+    if args.response_mode == "plain_translation":
+        return {"text_ja": clean_plain_translation(text)}
+    return extract_json_object(text)
 
 
 def value_from_nested(data: Dict[str, object], *keys: str) -> Optional[float]:
@@ -508,6 +552,21 @@ def write_review_csv(path: Path, rows: List[Dict[str, object]]) -> None:
                     "error": row.get("error", ""),
                 }
             )
+
+
+def write_predictions_jsonl(path: Path, rows: Iterable[Dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    latest: Dict[str, str] = {}
+    for row in rows:
+        if row.get("status") != "ok":
+            continue
+        sample_id = str(row.get("sample_id", "")).strip()
+        text = text_ja_from_row(row)
+        if sample_id and text:
+            latest[sample_id] = text
+    with path.open("w", encoding="utf-8") as f:
+        for sample_id in sorted(latest):
+            f.write(json.dumps({"sample_id": sample_id, "text": latest[sample_id]}, ensure_ascii=False) + "\n")
 
 
 def summarize_rows(rows: Iterable[Dict[str, object]]) -> Dict[str, object]:
@@ -654,6 +713,7 @@ def main():
         "video_root": args.video_root,
         "input_mode": args.input_mode,
         "num_frames": args.num_frames,
+        "response_mode": args.response_mode,
         "limit": len(sample_ids),
         "selection": args.selection,
         "models": {},
@@ -673,7 +733,7 @@ def main():
                 media_payload, media_info = sample_media_payload(args, sample_id)
                 response = chat_completion(args, api_key, model, sample_id, media_payload, media_info)
                 text = response_text(response)
-                parsed = extract_json_object(text)
+                parsed = parse_response_text(args, text)
                 generation_id = str(response.get("id", ""))
                 generation_info = fetch_generation(
                     api_key,
@@ -724,6 +784,8 @@ def main():
 
         review_path = reviews_dir / f"review_{model_name}.csv"
         write_review_csv(review_path, model_rows)
+        predictions_path = responses_dir / f"predictions_{model_name}.jsonl"
+        write_predictions_jsonl(predictions_path, model_rows)
 
         txt_tree_root = ""
         if args.write_txt_tree:
@@ -743,6 +805,7 @@ def main():
         all_summary["models"][model] = {
             **summarize_rows(model_rows),
             "responses_jsonl": str(jsonl_path),
+            "predictions_jsonl": str(predictions_path),
             "review_csv": str(review_path),
             "txt_tree_root": txt_tree_root,
         }

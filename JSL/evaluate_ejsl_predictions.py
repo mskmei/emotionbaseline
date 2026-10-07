@@ -30,6 +30,12 @@ def parse_args():
     parser.add_argument("--out_json", type=str, required=True)
     parser.add_argument("--out_csv", type=str, default="")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--sample_id_csv",
+        type=str,
+        default="",
+        help="Optional CSV with a sample_id column; when set, evaluate exactly these samples.",
+    )
     return parser.parse_args()
 
 
@@ -115,6 +121,19 @@ def load_predictions(path: Path) -> Dict[str, str]:
     return out
 
 
+def load_sample_ids_from_csv(path: Path) -> List[str]:
+    rows: List[str] = []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "sample_id" not in reader.fieldnames:
+            raise RuntimeError(f"{path} must contain a sample_id column")
+        for row in reader:
+            sample_id = str(row.get("sample_id", "")).strip()
+            if sample_id:
+                rows.append(sample_id)
+    return rows
+
+
 def gt_text(structure_txt_root: Path, sample_id: str) -> Tuple[str, str, str]:
     sd_id, dialogue_idx, utterance_idx, label = parse_ejsl_sample_id(sample_id)
     txt_file = structure_txt_root / sd_id / "txt" / f"{sd_id}-Dialogue-{dialogue_idx:02d}.txt"
@@ -150,8 +169,11 @@ def write_csv(path: Path, rows: List[Dict[str, object]]) -> None:
 
 def main():
     args = parse_args()
-    sample_ids = read_ejsl_names(Path(args.dial_list))
-    if args.limit > 0:
+    if args.sample_id_csv:
+        sample_ids = load_sample_ids_from_csv(Path(args.sample_id_csv))
+    else:
+        sample_ids = read_ejsl_names(Path(args.dial_list))
+    if args.limit > 0 and not args.sample_id_csv:
         sample_ids = sample_ids[: args.limit]
     preds = load_predictions(Path(args.predictions_jsonl))
     rows: List[Dict[str, object]] = []
