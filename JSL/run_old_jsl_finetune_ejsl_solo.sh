@@ -9,7 +9,9 @@ TRAIN_ENV=${TRAIN_ENV:-base}
 GPU=${GPU:-0}
 
 WORK_DIR=${WORK_DIR:-/raid_zoe/home/lr/maokeyu/sign/jsl_old_model_ejsl_solo_finetune}
-OLD_MODEL_DIR=${OLD_MODEL_DIR:-/raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/models/qwen3_jsl_lora_cc_e10_lr5e5}
+OLD_MODEL_DIR=${OLD_MODEL_DIR:-/raid_zoe/home/lr/maokeyu/sign/jsl_nonoracle/models/qwen3_jsl_lora_cc}
+USE_PRETRAINED=${USE_PRETRAINED:-1}
+BASE_MODEL=${BASE_MODEL:-Qwen/Qwen3-1.7B}
 
 SOLO_SCRIPT_TXT=${SOLO_SCRIPT_TXT:-JSL/script-solo-78.txt}
 SOLO_FRAME_ROOT=${SOLO_FRAME_ROOT:-/raid_zoe/home/lr/wangyi/sign/eJSL_solo/frame}
@@ -65,6 +67,7 @@ run_train_py_cpu() {
 }
 
 echo "[JSL-eJSL-solo] old model: $OLD_MODEL_DIR"
+echo "[JSL-eJSL-solo] use pretrained: $USE_PRETRAINED base model: $BASE_MODEL"
 echo "[JSL-eJSL-solo] work dir: $WORK_DIR"
 
 if [ "$REBUILD_MANIFEST" = "1" ] || [ ! -s "$SOLO_MANIFEST" ]; then
@@ -97,10 +100,17 @@ if [ "$REBUILD_MANIFEST" = "1" ] || [ ! -s "$EJSL_VAL_MANIFEST" ]; then
     --resume
 fi
 
+TRAIN_INIT_FLAGS=()
+if [ "$USE_PRETRAINED" = "1" ]; then
+  TRAIN_INIT_FLAGS+=(--init_model_dir "$OLD_MODEL_DIR")
+else
+  TRAIN_INIT_FLAGS+=(--base_model "$BASE_MODEL")
+fi
+
 run_train_py JSL/train_jsl_translation.py \
   --manifest_csv "$SOLO_MANIFEST" \
   --output_dir "$FINETUNE_DIR" \
-  --init_model_dir "$OLD_MODEL_DIR" \
+  "${TRAIN_INIT_FLAGS[@]}" \
   --train_split train \
   --num_visual_tokens "$NUM_VISUAL_TOKENS" \
   --max_target_tokens "$MAX_TARGET_TOKENS" \
@@ -112,7 +122,15 @@ run_train_py JSL/train_jsl_translation.py \
   --save_epochs 1 \
   --bf16
 
-mapfile -t CHECKPOINTS < <(find "$FINETUNE_DIR" -maxdepth 1 -type d -name 'checkpoint-epoch*' | sort)
+mapfile -t ALL_CHECKPOINTS < <(find "$FINETUNE_DIR" -maxdepth 1 -type d -name 'checkpoint-epoch*' | sort)
+CHECKPOINTS=()
+for ckpt in "${ALL_CHECKPOINTS[@]}"; do
+  ckpt_name="$(basename "$ckpt")"
+  ckpt_epoch="${ckpt_name#checkpoint-epoch}"
+  if [ "$((10#$ckpt_epoch))" -le "$EPOCHS" ]; then
+    CHECKPOINTS+=("$ckpt")
+  fi
+done
 if [ "${#CHECKPOINTS[@]}" -eq 0 ]; then
   echo "[JSL-eJSL-solo] no checkpoint dirs under $FINETUNE_DIR" >&2
   exit 1
@@ -152,13 +170,20 @@ run_train_py_cpu JSL/select_best_ejsl_eval.py \
   --out_csv "$EVAL_ROOT/checkpoint_ranking.csv" \
   --out_json "$EVAL_ROOT/best_checkpoint.json"
 
-BEST_CKPT="$(run_train_py_cpu - <<PY
-import json
-from pathlib import Path
-print(json.loads((Path("$EVAL_ROOT") / "best_checkpoint.json").read_text())["best_checkpoint"])
-PY
+BEST_CKPT="$(
+  conda run -n "$TRAIN_ENV" python -c "import json; from pathlib import Path; print(json.loads((Path('$EVAL_ROOT') / 'best_checkpoint.json').read_text())['best_checkpoint'])"
 )"
+BEST_CKPT="$(printf '%s' "$BEST_CKPT" | tail -n 1 | tr -d '[:space:]')"
+if [ -z "$BEST_CKPT" ]; then
+  echo "[JSL-eJSL-solo] failed to read best checkpoint from $EVAL_ROOT/best_checkpoint.json" >&2
+  exit 1
+fi
 BEST_MODEL_DIR="$FINETUNE_DIR/$BEST_CKPT"
+
+FINAL_GENERATE_FLAGS=(--resume)
+if [ "$REGEN" = "1" ]; then
+  FINAL_GENERATE_FLAGS+=(--force_predictions)
+fi
 
 run_train_py JSL/generate_ejsl_non_oracle_txt.py \
   --model_dir "$BEST_MODEL_DIR" \
@@ -175,7 +200,7 @@ run_train_py JSL/generate_ejsl_non_oracle_txt.py \
   --max_frames "$MAX_FRAMES" \
   --model_complexity "$MODEL_COMPLEXITY" \
   --max_new_tokens "$MAX_NEW_TOKENS" \
-  --resume
+  "${FINAL_GENERATE_FLAGS[@]}"
 
 run_train_py_cpu JSL/evaluate_ejsl_predictions.py \
   --predictions_jsonl "$BEST_PREDICTIONS_JSONL" \

@@ -48,6 +48,11 @@ def parse_args():
     parser.add_argument("--load_in_4bit", action="store_true")
     parser.add_argument("--predictions_jsonl", type=str, default="")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--force_predictions",
+        action="store_true",
+        help="Ignore and overwrite existing text predictions while still allowing --resume to reuse keypoint cache.",
+    )
     parser.add_argument("--limit", type=int, default=0)
     return parser.parse_args()
 
@@ -177,7 +182,9 @@ def main():
         raise RuntimeError(f"No sample ids loaded from {args.dial_list}")
 
     predictions_path = Path(args.predictions_jsonl) if args.predictions_jsonl else Path(args.output_txt_root) / "non_oracle_predictions.jsonl"
-    translations = load_done(predictions_path) if args.resume else {}
+    if args.force_predictions and predictions_path.exists():
+        predictions_path.unlink()
+    translations = load_done(predictions_path) if args.resume and not args.force_predictions else {}
 
     video_root = Path(args.video_root) if args.video_root else None
     frame_root = Path(args.frame_root) if args.frame_root else None
