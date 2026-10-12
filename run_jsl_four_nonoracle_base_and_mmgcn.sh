@@ -36,7 +36,9 @@ MELD_RAW_ROOT=${MELD_RAW_ROOT:-./dataset/MELD.Raw}
 
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/jsl_four_nonoracle_mmgcn}
 FEATURE_CACHE_DIR=${FEATURE_CACHE_DIR:-"$WORK_ROOT/feature_cache"}
-MELD_UNIFIED_PKL=${MELD_UNIFIED_PKL:-"$WORK_ROOT/features/meld_anjs4_unified.pkl"}
+DEFAULT_MELD_UNIFIED_PKL="$WORK_ROOT/features/meld_anjs4_unified.pkl"
+KNOWN_MELD_UNIFIED_PKL=${KNOWN_MELD_UNIFIED_PKL:-/raid_zoe/home/lr/maokeyu/sign/mmgcn_unified_meld_ejsl/meld_anjs4_unified.pkl}
+MELD_UNIFIED_PKL=${MELD_UNIFIED_PKL:-"$DEFAULT_MELD_UNIFIED_PKL"}
 TRANSLATED_ROOT=${TRANSLATED_ROOT:-"$WORK_ROOT/translated_txt"}
 TRANSLATION_CACHE=${TRANSLATION_CACHE:-"$WORK_ROOT/translation_cache.jsonl"}
 SWEEP_ROOT=${SWEEP_ROOT:-"$WORK_ROOT/candidates"}
@@ -160,6 +162,10 @@ for idx in "${!NAMES[@]}"; do
 done
 
 echo "[JSL-4NONORACLE] ===== Step 4: build/reuse MELD features ====="
+if [ "$REBUILD_MELD_FEATURES" != "1" ] && [ "$MELD_UNIFIED_PKL" = "$DEFAULT_MELD_UNIFIED_PKL" ] && [ ! -f "$MELD_UNIFIED_PKL" ] && [ -f "$KNOWN_MELD_UNIFIED_PKL" ]; then
+  MELD_UNIFIED_PKL="$KNOWN_MELD_UNIFIED_PKL"
+  echo "[JSL-4NONORACLE] reuse known MELD pkl: $MELD_UNIFIED_PKL"
+fi
 if [ "$REBUILD_MELD_FEATURES" = "1" ] || [ ! -f "$MELD_UNIFIED_PKL" ]; then
   CUDA_VISIBLE_DEVICES="$GPU" python MMGCN/build_unified_meld_ejsl_pkl.py \
     --meld_root "$MELD_RAW_ROOT" \
