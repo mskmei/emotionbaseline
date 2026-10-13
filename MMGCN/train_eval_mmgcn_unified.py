@@ -258,6 +258,35 @@ def zero_unused_modalities(textf, visuf, acouf, modality: str):
     return textf, visuf, acouf
 
 
+def apply_train_text_dropout(
+    textf: torch.Tensor,
+    umask: torch.Tensor,
+    dropout_prob: float,
+    scope: str,
+) -> torch.Tensor:
+    if dropout_prob <= 0:
+        return textf
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return textf
+    if p >= 1.0:
+        return torch.zeros_like(textf)
+
+    if scope == "batch":
+        return torch.zeros_like(textf) if torch.rand((), device=textf.device).item() < p else textf
+
+    if scope == "dialogue":
+        mask = torch.rand((1, textf.size(1), 1), device=textf.device) >= p
+    elif scope == "utterance":
+        mask = torch.rand((textf.size(0), textf.size(1), 1), device=textf.device) >= p
+    else:
+        raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+
+    valid = umask.transpose(0, 1).unsqueeze(-1).to(dtype=torch.bool, device=textf.device)
+    mask = torch.where(valid, mask, torch.ones_like(mask, dtype=torch.bool))
+    return textf * mask.to(dtype=textf.dtype)
+
+
 def build_model(args, info: Dict, modality: str, device: torch.device) -> Tuple[DialogueGCNModel, str, str]:
     modals, graph_type = resolve_modals(modality, args.graph_type, args.modals)
     if graph_type in {"MMGCN", "MMGCN2"} and device.type != "cuda":
@@ -368,6 +397,8 @@ def run_epoch(
     modality: str,
     optimizer: Optional[optim.Optimizer] = None,
     max_grad_norm: float = 0.0,
+    train_text_dropout: float = 0.0,
+    train_text_dropout_scope: str = "utterance",
 ) -> Optional[Dict]:
     if dataloader is None:
         return None
@@ -387,6 +418,8 @@ def run_epoch(
 
         textf, visuf, acouf, qmask, umask, label = [d.to(device) for d in data[:-1]]
         textf, visuf, acouf = zero_unused_modalities(textf, visuf, acouf, modality)
+        if train and modality in {"tv", "full"} and train_text_dropout > 0:
+            textf = apply_train_text_dropout(textf, umask, train_text_dropout, train_text_dropout_scope)
         lengths = sequence_lengths(umask)
 
         log_prob, *_ = model(textf, qmask, umask, lengths, acouf, visuf)
@@ -647,6 +680,8 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
             modality,
             optimizer=optimizer,
             max_grad_norm=args.max_grad_norm,
+            train_text_dropout=args.train_text_dropout,
+            train_text_dropout_scope=args.train_text_dropout_scope,
         )
         valid_result = run_epoch(model, loss_function, valid_loader, device, modality)
 
@@ -750,6 +785,8 @@ def train_one_modality(args, modality: str, train_pkl: Path, external_test_pkl: 
         "lr": args.lr,
         "l2": args.l2,
         "dropout": args.dropout,
+        "train_text_dropout": args.train_text_dropout,
+        "train_text_dropout_scope": args.train_text_dropout_scope,
         "loss": args.loss,
         "focal_gamma": args.focal_gamma,
         "class_weight": not args.no_class_weight,
@@ -828,6 +865,18 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=0.0003)
     parser.add_argument("--l2", type=float, default=0.00003)
     parser.add_argument("--dropout", type=float, default=0.4)
+    parser.add_argument(
+        "--train_text_dropout",
+        type=float,
+        default=0.0,
+        help="During training only, randomly zero text features for tv/full modalities.",
+    )
+    parser.add_argument(
+        "--train_text_dropout_scope",
+        choices=["utterance", "dialogue", "batch"],
+        default="utterance",
+        help="Granularity for --train_text_dropout.",
+    )
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--loss", choices=["nll", "focal"], default="focal")
     parser.add_argument("--focal_gamma", type=float, default=2.0)

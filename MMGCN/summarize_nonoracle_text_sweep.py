@@ -31,6 +31,9 @@ def row_for(candidate_dir: Path, modality: str) -> Dict[str, object] | None:
     per_class = summary.get("per_class", {}) or {}
     row: Dict[str, object] = {
         "candidate": meta.get("candidate", candidate_dir.name),
+        "base_candidate": meta.get("base_candidate", ""),
+        "train_text_dropout": meta.get("train_text_dropout", ""),
+        "train_text_dropout_scope": meta.get("train_text_dropout_scope", ""),
         "modality": modality,
         "accuracy": summary.get("accuracy"),
         "macro_f1": summary.get("macro_f1"),
@@ -90,7 +93,10 @@ def main():
     fieldnames = [
         "rank",
         "candidate",
+        "base_candidate",
         "modality",
+        "train_text_dropout",
+        "train_text_dropout_scope",
         "weighted_f1",
         "macro_f1",
         "accuracy",
