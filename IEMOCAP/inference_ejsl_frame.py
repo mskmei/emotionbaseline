@@ -1,6 +1,7 @@
 import argparse
 import csv
 import io
+import json
 import math
 import re
 from collections import defaultdict
@@ -855,6 +856,33 @@ def save_reports(all_golds: List[int], all_preds: List[int], save_dir: Path, pre
             f.write(" ".join(str(int(x)) for x in row) + "\n")
     with open(save_dir / f"{prefix}_classification_report.txt", "w", encoding="utf-8") as f:
         f.write(report)
+    per_p, per_r, per_f1, per_support = metrics.precision_recall_fscore_support(
+        all_golds,
+        all_preds,
+        labels=labels_idx,
+        zero_division=0,
+    )
+    summary = {
+        "label_names": TARGET_LABELS,
+        "n_samples": int(len(all_golds)),
+        "accuracy": float(metrics.accuracy_score(all_golds, all_preds)),
+        "macro_f1": float(metrics.f1_score(all_golds, all_preds, labels=labels_idx, average="macro", zero_division=0)),
+        "weighted_f1": float(metrics.f1_score(all_golds, all_preds, labels=labels_idx, average="weighted", zero_division=0)),
+        "gold_counts": dict(zip(TARGET_LABELS, np.bincount(np.asarray(all_golds), minlength=len(TARGET_LABELS)).astype(int).tolist())),
+        "pred_counts": dict(zip(TARGET_LABELS, np.bincount(np.asarray(all_preds), minlength=len(TARGET_LABELS)).astype(int).tolist())),
+        "per_class": {
+            TARGET_LABELS[i]: {
+                "precision": float(per_p[i]),
+                "recall": float(per_r[i]),
+                "f1": float(per_f1[i]),
+                "support": int(per_support[i]),
+            }
+            for i in labels_idx
+        },
+    }
+    with open(save_dir / f"{prefix}_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=2)
+        f.write("\n")
 
     print("[Eval] confusion matrix labels:", TARGET_LABELS)
     print(cm)

@@ -227,6 +227,49 @@ def move_batch(data: Dict, device: torch.device) -> Dict:
     return moved
 
 
+def apply_train_text_dropout_batch_first(text: torch.Tensor, lengths: torch.Tensor, dropout_prob: float, scope: str) -> torch.Tensor:
+    if dropout_prob <= 0:
+        return text
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return text
+    if p >= 1.0:
+        return torch.zeros_like(text)
+    if scope == "batch":
+        return torch.zeros_like(text) if torch.rand((), device=text.device).item() < p else text
+    if scope == "dialogue":
+        mask = torch.rand((text.size(0), 1, 1), device=text.device) >= p
+    elif scope == "utterance":
+        mask = torch.rand((text.size(0), text.size(1), 1), device=text.device) >= p
+    else:
+        raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+    valid = torch.arange(text.size(1), device=text.device).unsqueeze(0) < lengths.to(text.device).unsqueeze(1)
+    valid = valid.unsqueeze(-1)
+    mask = torch.where(valid, mask, torch.ones_like(mask, dtype=torch.bool))
+    return text * mask.to(dtype=text.dtype)
+
+
+def apply_modality_inputs(data: Dict, modality: str, train: bool, train_text_dropout: float, train_text_dropout_scope: str) -> Dict:
+    if modality == "text":
+        data["audio_tensor"] = torch.zeros_like(data["audio_tensor"])
+        data["visual_tensor"] = torch.zeros_like(data["visual_tensor"])
+    elif modality == "tv":
+        data["audio_tensor"] = torch.zeros_like(data["audio_tensor"])
+        if train and train_text_dropout > 0:
+            data["text_tensor"] = apply_train_text_dropout_batch_first(
+                data["text_tensor"],
+                data["text_len_tensor"],
+                train_text_dropout,
+                train_text_dropout_scope,
+            )
+    elif modality == "visual":
+        data["text_tensor"] = torch.zeros_like(data["text_tensor"])
+        data["audio_tensor"] = torch.zeros_like(data["audio_tensor"])
+    else:
+        raise ValueError(f"Unsupported modality={modality}")
+    return data
+
+
 def conx_forward_logits(model: nn.Module, data: Dict) -> Tuple[torch.Tensor, torch.Tensor]:
     batch_padded_tensor_data = copy.deepcopy(data)
     base_tensor_graph = TensorGraph(batch_padded_tensor_data, model.modalities)
@@ -256,6 +299,9 @@ def run_epoch(
     cb_loss_param: float,
     optimizer: Optional[torch.optim.Optimizer] = None,
     max_grad_norm: float = 0.0,
+    modality: str = "visual",
+    train_text_dropout: float = 0.0,
+    train_text_dropout_scope: str = "utterance",
 ) -> Optional[Dict]:
     if dataset is None or len(dataset) == 0:
         return None
@@ -272,6 +318,7 @@ def run_epoch(
             optimizer.zero_grad()
         raw_data = dataset[idx]
         data = move_batch(raw_data, device)
+        data = apply_modality_inputs(data, modality, train, train_text_dropout, train_text_dropout_scope)
         labels = data["label_tensor"]
         valid = labels.ge(0)
         valid_count = int(valid.sum().item())
@@ -389,7 +436,7 @@ def save_checkpoint(path: Path, model: nn.Module, args, info: Dict, epoch: int, 
         {
             "model_state_dict": model.state_dict(),
             "baseline": "ConxGNN",
-            "modality": "visual",
+            "modality": args.modality,
             "label_names": ANJS_LABELS,
             "info": info,
             "args": vars(args),
@@ -433,6 +480,7 @@ def train(args) -> None:
     print(f"[CONXGNN] external_test_pkl={external_pkl}")
     print(f"[CONXGNN] out_dir={out_dir}")
     print(f"[CONXGNN] device={device}")
+    print(f"[CONXGNN] modality={args.modality} train_text_dropout={args.train_text_dropout}")
     print(f"[CONXGNN] feature_info={json.dumps(info, ensure_ascii=False, indent=2)}")
     print(f"[CONXGNN] model_dataset={config.dataset} modalities={config.modalities}")
 
@@ -458,10 +506,22 @@ def train(args) -> None:
         config.training_status["cur_epoch"] = epoch
         trainset.shuffle(args.seed + epoch)
         start = time.time()
-        train_result = run_epoch(model, cls_loss, trainset, device, args.ce_loss_param, args.cb_loss_param, optimizer=optimizer, max_grad_norm=args.max_grad_norm)
-        valid_result = run_epoch(model, cls_loss, devset, device, args.ce_loss_param, args.cb_loss_param)
-        source_result = run_epoch(model, cls_loss, source_set, device, args.ce_loss_param, args.cb_loss_param)
-        external_result = run_epoch(model, cls_loss, external_set, device, args.ce_loss_param, args.cb_loss_param)
+        train_result = run_epoch(
+            model,
+            cls_loss,
+            trainset,
+            device,
+            args.ce_loss_param,
+            args.cb_loss_param,
+            optimizer=optimizer,
+            max_grad_norm=args.max_grad_norm,
+            modality=args.modality,
+            train_text_dropout=args.train_text_dropout,
+            train_text_dropout_scope=args.train_text_dropout_scope,
+        )
+        valid_result = run_epoch(model, cls_loss, devset, device, args.ce_loss_param, args.cb_loss_param, modality=args.modality)
+        source_result = run_epoch(model, cls_loss, source_set, device, args.ce_loss_param, args.cb_loss_param, modality=args.modality)
+        external_result = run_epoch(model, cls_loss, external_set, device, args.ce_loss_param, args.cb_loss_param, modality=args.modality)
         final_source = source_result
         final_external = external_result
         selected, selection_split = select_result(args, valid_result, source_result, external_result)
@@ -473,7 +533,7 @@ def train(args) -> None:
             best_source = result_snapshot(source_result)
             best_external = result_snapshot(external_result)
             best_state = copy.deepcopy(model.state_dict())
-            print(f"[CONXGNN][visual] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
+            print(f"[CONXGNN][{args.modality}] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
         if args.save_epoch_every > 0 and (epoch % args.save_epoch_every == 0 or epoch == args.epochs):
             save_checkpoint(out_dir / "checkpoints" / f"epoch_{epoch:03d}.pt", model, args, info, epoch, best_epoch, best_score)
         row = {
@@ -498,14 +558,14 @@ def train(args) -> None:
         }
         epoch_rows.append(row)
         print(
-            f"[CONXGNN][visual] epoch={epoch} "
+            f"[CONXGNN][{args.modality}] epoch={epoch} "
             f"train_wf1={(train_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"source_wf1={(source_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"external_wf1={(external_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"time={row['time_sec']}s"
         )
 
-    metrics_path = out_dir / "conxgnn_visual_epoch_metrics.csv"
+    metrics_path = out_dir / f"conxgnn_{args.modality}_epoch_metrics.csv"
     with metrics_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(epoch_rows[0]))
         writer.writeheader()
@@ -514,7 +574,9 @@ def train(args) -> None:
     common_extra = {
         "script": "new2/ConxGNN/train_eval_conxgnn_visual_anjs.py",
         "baseline": "ConxGNN",
-        "modality": "visual",
+        "modality": args.modality,
+        "train_text_dropout": args.train_text_dropout,
+        "train_text_dropout_scope": args.train_text_dropout_scope,
         "train_pkl": str(train_pkl),
         "external_test_pkl": str(external_pkl) if external_pkl else "",
         "label_names": ANJS_LABELS,
@@ -551,17 +613,18 @@ def train(args) -> None:
         save_checkpoint(out_dir / "model_best.pt", model, args, info, best_epoch, best_epoch, best_score)
     if best_external_summary:
         print(
-            f"[CONXGNN][visual] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
+            f"[CONXGNN][{args.modality}] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
             f"macro_f1={best_external_summary['macro_f1']:.4f} weighted_f1={best_external_summary['weighted_f1']:.4f}"
         )
-    print(f"[CONXGNN][visual] reports saved to {out_dir}")
+    print(f"[CONXGNN][{args.modality}] reports saved to {out_dir}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/evaluate ConxGNN on internally aligned ANJS4 visual-only features.")
+    parser = argparse.ArgumentParser(description="Train/evaluate ConxGNN on internally aligned ANJS4 text/visual features.")
     parser.add_argument("--train_pkl", type=str, required=True)
     parser.add_argument("--external_test_pkl", type=str, default="")
     parser.add_argument("--out_dir", type=str, required=True)
+    parser.add_argument("--modality", choices=["text", "visual", "tv"], default="visual")
     parser.add_argument("--config_yaml", type=str, default=str(THIS_DIR / "configs" / "meld.yaml"))
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=30)
@@ -577,6 +640,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ce_loss_param", type=float, default=1.0)
     parser.add_argument("--cb_loss_param", type=float, default=0.0)
     parser.add_argument("--max_grad_norm", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout_scope", choices=["utterance", "dialogue", "batch"], default="utterance")
     parser.add_argument("--selection_split", choices=["valid", "source", "external"], default="source")
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
     parser.add_argument("--save_epoch_every", type=int, default=0)

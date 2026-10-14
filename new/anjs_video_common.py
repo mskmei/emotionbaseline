@@ -65,6 +65,17 @@ class FeatureCache:
         np.save(path, np.asarray(value, dtype=np.float32))
 
 
+def fit_feature_dim(vec: np.ndarray, target_dim: int) -> np.ndarray:
+    arr = np.asarray(vec, dtype=np.float32).reshape(-1)
+    if target_dim <= 0 or arr.shape[0] == target_dim:
+        return arr.astype(np.float32)
+    if arr.shape[0] > target_dim:
+        return arr[:target_dim].astype(np.float32)
+    out = np.zeros(target_dim, dtype=np.float32)
+    out[: arr.shape[0]] = arr
+    return out
+
+
 def resolve_path(raw: str | Path, must_exist: bool = False, base: Optional[Path] = None) -> Path:
     path = Path(raw).expanduser()
     candidates = [path] if path.is_absolute() else []
@@ -695,3 +706,101 @@ class VideoEmbeddingEncoder:
         self.cache.put("video_embedding", key, vec)
         return vec, status
 
+
+class TextEmbeddingEncoder:
+    def __init__(
+        self,
+        text_model: str,
+        cache: FeatureCache,
+        device: torch.device,
+        pooling: str = "cls",
+        max_length: int = 96,
+        batch_size: int = 32,
+        local_model_root: str | Path = "",
+        fp16: bool = False,
+    ):
+        from transformers import AutoModel, AutoTokenizer
+
+        self.text_model = resolve_hf_or_local(text_model, local_model_root)
+        self.cache = cache
+        self.device = device
+        self.pooling = pooling
+        self.max_length = int(max_length)
+        self.batch_size = int(batch_size)
+        self.fp16 = bool(fp16)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.text_model)
+        self.model = AutoModel.from_pretrained(self.text_model).to(device)
+        self.model.eval()
+        self.dim = int(self.model.config.hidden_size)
+
+    def _key(self, text: str) -> str:
+        return json.dumps(
+            {
+                "encoder": "hf_text_embedding",
+                "text_model": self.text_model,
+                "pooling": self.pooling,
+                "max_length": self.max_length,
+                "text": text,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _pool(self, last_hidden: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+        if self.pooling == "cls":
+            return last_hidden[:, 0, :]
+        if self.pooling == "last":
+            lengths = attention_mask.sum(dim=1).clamp_min(1) - 1
+            batch_idx = torch.arange(last_hidden.size(0), device=last_hidden.device)
+            return last_hidden[batch_idx, lengths, :]
+        if self.pooling == "mean":
+            mask = attention_mask.unsqueeze(-1).to(last_hidden.dtype)
+            return (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp_min(1.0)
+        raise ValueError(f"Unsupported text pooling: {self.pooling}")
+
+    def encode_texts(self, texts: Sequence[str]) -> List[np.ndarray]:
+        outputs: List[Optional[np.ndarray]] = [None] * len(texts)
+        pending_indices: List[int] = []
+        pending_texts: List[str] = []
+        pending_keys: List[str] = []
+
+        for idx, text in enumerate(texts):
+            key = self._key(normalize_text(text))
+            cached = self.cache.get("text_embedding", key)
+            if cached is not None:
+                outputs[idx] = cached
+            else:
+                pending_indices.append(idx)
+                pending_texts.append(normalize_text(text))
+                pending_keys.append(key)
+
+        for start in range(0, len(pending_texts), self.batch_size):
+            batch_texts = pending_texts[start : start + self.batch_size]
+            batch_indices = pending_indices[start : start + self.batch_size]
+            batch_keys = pending_keys[start : start + self.batch_size]
+            encoded = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            encoded = {key: value.to(self.device) for key, value in encoded.items()}
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(enabled=self.device.type == "cuda" and self.fp16):
+                    hidden = self.model(**encoded).last_hidden_state
+                    pooled = self._pool(hidden, encoded["attention_mask"])
+            vectors = pooled.detach().cpu().numpy().astype(np.float32)
+            for idx, key, vec in zip(batch_indices, batch_keys, vectors):
+                outputs[idx] = vec
+                self.cache.put("text_embedding", key, vec)
+
+        return [np.asarray(x, dtype=np.float32) for x in outputs]
+
+    def encode_items(self, items: Sequence[UtteranceItem], target_dim: int = 0) -> np.ndarray:
+        vectors = self.encode_texts([item.text for item in items])
+        if not vectors:
+            dim = int(target_dim or self.dim)
+            return np.zeros((0, dim), dtype=np.float32)
+        fitted = [fit_feature_dim(vec, target_dim) if target_dim > 0 else np.asarray(vec, dtype=np.float32) for vec in vectors]
+        return np.stack(fitted, axis=0).astype(np.float32)

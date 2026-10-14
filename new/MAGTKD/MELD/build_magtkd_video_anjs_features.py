@@ -18,6 +18,7 @@ sys.path.insert(0, str(NEW_ROOT))
 from anjs_video_common import (  # noqa: E402
     ANJS_LABELS,
     FeatureCache,
+    TextEmbeddingEncoder,
     UtteranceItem,
     VideoEmbeddingEncoder,
     label_counts,
@@ -44,6 +45,7 @@ def encode_dialogue_features(
     test_ids: Sequence[str],
     valid_ids: Sequence[str],
     encoder: VideoEmbeddingEncoder,
+    text_encoder: TextEmbeddingEncoder | None,
     hidden_dim: int,
     max_speakers: int,
     meta: Dict,
@@ -79,8 +81,9 @@ def encode_dialogue_features(
         if visual.shape[-1] != hidden_dim:
             raise RuntimeError(f"MAGTKD expects hidden_dim={hidden_dim}, but video encoder produced {visual.shape[-1]}")
 
+        text_features = text_encoder.encode_items(items, hidden_dim) if text_encoder is not None else zero_seq(n_items, hidden_dim)
         zeros = zero_seq(n_items, hidden_dim)
-        text[key] = zeros.copy()
+        text[key] = text_features.copy()
         audio[key] = zeros.copy()
         video[key] = visual
         audio_kd[key] = zeros.copy()
@@ -104,7 +107,7 @@ def encode_dialogue_features(
         "valid_vids": list(valid_ids),
         "meta": {
             **meta,
-            "format": "MAGTKD_first_stage_dict_ANJS4_video_only",
+            "format": "MAGTKD_first_stage_dict_ANJS4",
             "label_space": "ANJS4",
             "label_names": ANJS_LABELS,
             "unknown_context_label": -100,
@@ -112,7 +115,7 @@ def encode_dialogue_features(
             "video_dim": encoder.dim,
             "max_speakers": max_speakers,
             "video_status": status_counts,
-            "feature_policy": "magtkd_video_only_zero_text_audio_same_video_kd",
+            "feature_policy": "magtkd_text_video_zero_audio_same_video_kd" if text_encoder is not None else "magtkd_video_only_zero_text_audio_same_video_kd",
         },
     }
     out_pkl.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +124,7 @@ def encode_dialogue_features(
 
     summary = {
         "out_pkl": str(out_pkl),
-        "format": "MAGTKD_first_stage_dict_ANJS4_video_only",
+        "format": "MAGTKD_first_stage_dict_ANJS4",
         "label_space": "ANJS4",
         "label_names": ANJS_LABELS,
         "unknown_context_label": -100,
@@ -153,7 +156,7 @@ def encode_dialogue_features(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build MAGTKD-style ANJS4 video-only feature pkl files for BOBSL, MELD, and translated eJSL.")
+    parser = argparse.ArgumentParser(description="Build MAGTKD-style ANJS4 feature pkl files for BOBSL, MELD, and translated eJSL.")
     parser.add_argument("--bobsl_root", type=str, default="/raid_zoe/home/lr/wangyi/sign/bobsl")
     parser.add_argument("--bobsl_train_csv", type=str, default="")
     parser.add_argument("--bobsl_val_csv", type=str, default="")
@@ -183,6 +186,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--video_model", type=str, default="facebook/timesformer-base-finetuned-k400")
     parser.add_argument("--video_processor", type=str, default="MCG-NJU/videomae-base")
+    parser.add_argument("--use_text_features", action="store_true")
+    parser.add_argument("--text_model", type=str, default="roberta-large")
+    parser.add_argument("--text_pooling", type=str, default="cls", choices=["cls", "mean", "last"])
+    parser.add_argument("--text_max_length", type=int, default=96)
+    parser.add_argument("--text_batch_size", type=int, default=32)
     parser.add_argument("--local_model_root", type=str, default="./new/MAGTKD/pretrained_model")
     parser.add_argument("--num_frames", type=int, default=8)
     parser.add_argument("--video_max_seconds", type=float, default=30.0)
@@ -213,10 +221,24 @@ def main() -> None:
         max_seconds=args.video_max_seconds,
         fp16=args.fp16,
     )
+    text_encoder = None
+    if args.use_text_features:
+        text_encoder = TextEmbeddingEncoder(
+            text_model=args.text_model,
+            cache=cache,
+            device=device,
+            pooling=args.text_pooling,
+            max_length=args.text_max_length,
+            batch_size=args.text_batch_size,
+            local_model_root=args.local_model_root,
+            fp16=args.fp16,
+        )
     print(f"[MAGTKD-FEATURES] device={device}")
     print(f"[MAGTKD-FEATURES] cache_dir={cache.root}")
     print(f"[MAGTKD-FEATURES] video_model={encoder.video_model}")
     print(f"[MAGTKD-FEATURES] video_processor={encoder.video_processor}")
+    if text_encoder is not None:
+        print(f"[MAGTKD-FEATURES] text_model={text_encoder.text_model}")
 
     if not args.skip_meld:
         meld_dialogues, meld_train_ids, meld_test_ids, meld_meta = read_meld_dialogues(
@@ -230,6 +252,7 @@ def main() -> None:
             meld_test_ids,
             [],
             encoder,
+            text_encoder,
             args.hidden_dim,
             args.max_speakers,
             {**meld_meta, "dataset": "MELD"},
@@ -250,6 +273,7 @@ def main() -> None:
             ejsl_test_ids,
             [],
             encoder,
+            text_encoder,
             args.hidden_dim,
             args.max_speakers,
             {**ejsl_meta, "dataset": "eJSL"},
@@ -275,6 +299,7 @@ def main() -> None:
             bobsl_val_ids,
             [],
             encoder,
+            text_encoder,
             args.hidden_dim,
             args.max_speakers,
             {**bobsl_meta, "dataset": "BOBSL", "pkl_role": "train_val"},
@@ -286,6 +311,7 @@ def main() -> None:
             bobsl_test_ids,
             [],
             encoder,
+            text_encoder,
             args.hidden_dim,
             args.max_speakers,
             {**bobsl_meta, "dataset": "BOBSL", "pkl_role": "test"},

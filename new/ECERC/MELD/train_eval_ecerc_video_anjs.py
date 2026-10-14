@@ -231,8 +231,41 @@ def sequence_lengths(umask: torch.Tensor) -> List[int]:
     return lengths
 
 
-def prepare_video_only_inputs(emo_text, sem_text, visual, audio):
-    return torch.zeros_like(emo_text), torch.zeros_like(sem_text), visual, torch.zeros_like(audio)
+def make_train_text_dropout_mask_seq_first(text: torch.Tensor, umask: torch.Tensor, dropout_prob: float, scope: str) -> Optional[torch.Tensor]:
+    if dropout_prob <= 0:
+        return None
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return None
+    if p >= 1.0:
+        return torch.zeros((text.size(0), text.size(1), 1), dtype=text.dtype, device=text.device)
+    if scope == "batch":
+        keep = 0.0 if torch.rand((), device=text.device).item() < p else 1.0
+        return torch.full((text.size(0), text.size(1), 1), keep, dtype=text.dtype, device=text.device)
+    if scope == "dialogue":
+        mask = torch.rand((1, text.size(1), 1), device=text.device) >= p
+    elif scope == "utterance":
+        mask = torch.rand((text.size(0), text.size(1), 1), device=text.device) >= p
+    else:
+        raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+    valid = umask.transpose(0, 1).unsqueeze(-1).to(dtype=torch.bool, device=text.device)
+    mask = torch.where(valid, mask, torch.ones_like(mask, dtype=torch.bool))
+    return mask.to(dtype=text.dtype)
+
+
+def apply_train_text_dropout_seq_first(text: torch.Tensor, umask: torch.Tensor, dropout_prob: float, scope: str) -> torch.Tensor:
+    mask = make_train_text_dropout_mask_seq_first(text, umask, dropout_prob, scope)
+    return text if mask is None else text * mask
+
+
+def prepare_inputs(emo_text, sem_text, visual, audio, modality: str):
+    if modality == "text":
+        return emo_text, sem_text, torch.zeros_like(visual), torch.zeros_like(audio)
+    if modality == "tv":
+        return emo_text, sem_text, visual, torch.zeros_like(audio)
+    if modality == "video":
+        return torch.zeros_like(emo_text), torch.zeros_like(sem_text), visual, torch.zeros_like(audio)
+    raise ValueError(f"Unsupported modality={modality}")
 
 
 def run_epoch(
@@ -242,6 +275,9 @@ def run_epoch(
     device: torch.device,
     optimizer: Optional[optim.Optimizer] = None,
     max_grad_norm: float = 0.0,
+    modality: str = "video",
+    train_text_dropout: float = 0.0,
+    train_text_dropout_scope: str = "utterance",
 ) -> Optional[Dict]:
     if dataloader is None:
         return None
@@ -258,7 +294,12 @@ def run_epoch(
         if train:
             optimizer.zero_grad()
         emo_text, sem_text, visual, audio, qmask, umask, label = [d.to(device) for d in data[:-1]]
-        emo_text, sem_text, visual, audio = prepare_video_only_inputs(emo_text, sem_text, visual, audio)
+        emo_text, sem_text, visual, audio = prepare_inputs(emo_text, sem_text, visual, audio, modality)
+        if train and modality == "tv" and train_text_dropout > 0:
+            text_mask = make_train_text_dropout_mask_seq_first(emo_text, umask, train_text_dropout, train_text_dropout_scope)
+            if text_mask is not None:
+                emo_text = emo_text * text_mask
+                sem_text = sem_text * text_mask
         lengths = sequence_lengths(umask)
         u_e = torch.cat([emo_text, audio, visual], dim=-1)
 
@@ -393,7 +434,7 @@ def save_checkpoint(path: Path, model: ECERC, args, info: Dict, epoch: int, best
         {
             "model_state_dict": model.state_dict(),
             "baseline": "ECERC",
-            "modality": "video",
+            "modality": args.modality,
             "label_names": ANJS_LABELS,
             "info": info,
             "args": vars(args),
@@ -451,10 +492,20 @@ def train(args) -> None:
 
     for epoch in range(1, args.epochs + 1):
         start = time.time()
-        train_result = run_epoch(model, loss_function, train_loader, device, optimizer=optimizer, max_grad_norm=args.max_grad_norm)
-        valid_result = run_epoch(model, loss_function, valid_loader, device)
-        source_result = run_epoch(model, loss_function, source_loader, device)
-        external_result = run_epoch(model, loss_function, external_loader, device)
+        train_result = run_epoch(
+            model,
+            loss_function,
+            train_loader,
+            device,
+            optimizer=optimizer,
+            max_grad_norm=args.max_grad_norm,
+            modality=args.modality,
+            train_text_dropout=args.train_text_dropout,
+            train_text_dropout_scope=args.train_text_dropout_scope,
+        )
+        valid_result = run_epoch(model, loss_function, valid_loader, device, modality=args.modality)
+        source_result = run_epoch(model, loss_function, source_loader, device, modality=args.modality)
+        external_result = run_epoch(model, loss_function, external_loader, device, modality=args.modality)
         final_source = source_result
         final_external = external_result
 
@@ -467,7 +518,7 @@ def train(args) -> None:
             best_source = result_snapshot(source_result)
             best_external = result_snapshot(external_result)
             best_state = copy.deepcopy(model.state_dict())
-            print(f"[ECERC][video] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
+            print(f"[ECERC][{args.modality}] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
 
         if args.save_epoch_every > 0 and (epoch % args.save_epoch_every == 0 or epoch == args.epochs):
             save_checkpoint(out_dir / "checkpoints" / f"epoch_{epoch:03d}.pt", model, args, info, epoch, best_epoch, best_score)
@@ -494,14 +545,14 @@ def train(args) -> None:
         }
         epoch_rows.append(row)
         print(
-            f"[ECERC][video] epoch={epoch} "
+            f"[ECERC][{args.modality}] epoch={epoch} "
             f"train_wf1={(train_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"source_wf1={(source_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"external_wf1={(external_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"time={row['time_sec']}s"
         )
 
-    metrics_path = out_dir / "ecerc_video_epoch_metrics.csv"
+    metrics_path = out_dir / f"ecerc_{args.modality}_epoch_metrics.csv"
     with metrics_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(epoch_rows[0]))
         writer.writeheader()
@@ -510,7 +561,9 @@ def train(args) -> None:
     common_extra = {
         "script": "new/ECERC/MELD/train_eval_ecerc_video_anjs.py",
         "baseline": "ECERC",
-        "modality": "video",
+        "modality": args.modality,
+        "train_text_dropout": args.train_text_dropout,
+        "train_text_dropout_scope": args.train_text_dropout_scope,
         "train_pkl": str(train_pkl),
         "external_test_pkl": str(external_pkl) if external_pkl else "",
         "label_names": ANJS_LABELS,
@@ -548,17 +601,18 @@ def train(args) -> None:
         save_checkpoint(out_dir / "model_best.pt", model, args, info, best_epoch, best_epoch, best_score)
     if best_external_summary:
         print(
-            f"[ECERC][video] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
+            f"[ECERC][{args.modality}] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
             f"macro_f1={best_external_summary['macro_f1']:.4f} weighted_f1={best_external_summary['weighted_f1']:.4f}"
         )
-    print(f"[ECERC][video] reports saved to {out_dir}")
+    print(f"[ECERC][{args.modality}] reports saved to {out_dir}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/evaluate ECERC on internally aligned ANJS4 video-only features.")
+    parser = argparse.ArgumentParser(description="Train/evaluate ECERC on internally aligned ANJS4 text/video features.")
     parser.add_argument("--train_pkl", type=str, required=True)
     parser.add_argument("--external_test_pkl", type=str, default="")
     parser.add_argument("--out_dir", type=str, required=True)
+    parser.add_argument("--modality", choices=["text", "video", "tv"], default="video")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch_size", type=int, default=32)
@@ -568,6 +622,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--loss_gamma", type=float, default=1.0)
     parser.add_argument("--class_weight", action="store_true")
     parser.add_argument("--max_grad_norm", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout_scope", choices=["utterance", "dialogue", "batch"], default="utterance")
     parser.add_argument("--base_layer", type=int, default=1)
     parser.add_argument("--hidden_size", type=int, default=128)
     parser.add_argument("--selection_split", choices=["auto", "valid", "source", "external"], default="source")
@@ -583,4 +639,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

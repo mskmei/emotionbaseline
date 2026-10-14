@@ -207,11 +207,46 @@ def sequence_lengths(umask: torch.Tensor) -> List[int]:
     return lengths
 
 
-def prepare_video_only_inputs(text, audio, video, audio_kd, video_kd):
+def apply_train_text_dropout_seq_first(text: torch.Tensor, umask: torch.Tensor, dropout_prob: float, scope: str) -> torch.Tensor:
+    if dropout_prob <= 0:
+        return text
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return text
+    if p >= 1.0:
+        return torch.zeros_like(text)
+    if scope == "batch":
+        return torch.zeros_like(text) if torch.rand((), device=text.device).item() < p else text
+    if scope == "dialogue":
+        mask = torch.rand((1, text.size(1), 1), device=text.device) >= p
+    elif scope == "utterance":
+        mask = torch.rand((text.size(0), text.size(1), 1), device=text.device) >= p
+    else:
+        raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+    valid = umask.transpose(0, 1).unsqueeze(-1).to(dtype=torch.bool, device=text.device)
+    mask = torch.where(valid, mask, torch.ones_like(mask, dtype=torch.bool))
+    return text * mask.to(dtype=text.dtype)
+
+
+def prepare_inputs(text, audio, video, audio_kd, video_kd, modality: str):
     zero_text = torch.zeros_like(text)
     zero_audio = torch.zeros_like(audio)
+    zero_video = torch.zeros_like(video)
     zero_audio_kd = torch.zeros_like(audio_kd)
-    return zero_text, zero_audio, video, zero_audio_kd, video
+    zero_video_kd = torch.zeros_like(video_kd)
+    if modality == "text":
+        return text, zero_audio, zero_video, zero_audio_kd, zero_video_kd
+    if modality == "tv":
+        return text, zero_audio, video, zero_audio_kd, video_kd
+    if modality == "video":
+        return zero_text, zero_audio, video, zero_audio_kd, video_kd
+    raise ValueError(f"Unsupported modality={modality}")
+
+
+def resolve_output_head(modality: str, output_head: str) -> str:
+    if output_head != "auto":
+        return output_head
+    return "text" if modality == "text" else "video"
 
 
 def choose_logits(output_head: str, t_logits: torch.Tensor, a_logits: torch.Tensor, v_logits: torch.Tensor) -> torch.Tensor:
@@ -233,6 +268,9 @@ def run_epoch(
     optimizer: Optional[torch.optim.Optimizer] = None,
     scheduler=None,
     max_grad_norm: float = 0.0,
+    modality: str = "video",
+    train_text_dropout: float = 0.0,
+    train_text_dropout_scope: str = "utterance",
 ) -> Optional[Dict]:
     if dataloader is None:
         return None
@@ -249,7 +287,9 @@ def run_epoch(
         if train:
             optimizer.zero_grad()
         text, audio, video, audio_kd, video_kd, qmask, umask, label = [d.to(device) for d in data[:-1]]
-        text, audio, video, audio_kd, video_kd = prepare_video_only_inputs(text, audio, video, audio_kd, video_kd)
+        text, audio, video, audio_kd, video_kd = prepare_inputs(text, audio, video, audio_kd, video_kd, modality)
+        if train and modality == "tv" and train_text_dropout > 0:
+            text = apply_train_text_dropout_seq_first(text, umask, train_text_dropout, train_text_dropout_scope)
         lengths = sequence_lengths(umask)
 
         with torch.set_grad_enabled(train):
@@ -386,7 +426,7 @@ def save_checkpoint(path: Path, model: Transformer_Based_Model, args, info: Dict
         {
             "model_state_dict": model.state_dict(),
             "baseline": "MAGTKD",
-            "modality": "video",
+            "modality": args.modality,
             "label_names": ANJS_LABELS,
             "info": info,
             "args": vars(args),
@@ -404,6 +444,7 @@ def metric_value(result: Dict, metric: str) -> float:
 
 def train(args) -> None:
     seed_everything(args.seed)
+    output_head = resolve_output_head(args.modality, args.output_head)
     train_pkl = resolve_path(args.train_pkl, must_exist=True)
     external_pkl = resolve_path(args.external_test_pkl, must_exist=True) if args.external_test_pkl else None
     out_dir = resolve_path(args.out_dir, must_exist=False)
@@ -426,7 +467,7 @@ def train(args) -> None:
     print(f"[MAGTKD] external_test_pkl={external_pkl}")
     print(f"[MAGTKD] out_dir={out_dir}")
     print(f"[MAGTKD] device={device}")
-    print(f"[MAGTKD] output_head={args.output_head}")
+    print(f"[MAGTKD] modality={args.modality} output_head={output_head}")
     print(f"[MAGTKD] feature_info={json.dumps(info, ensure_ascii=False, indent=2)}")
 
     train_loader, valid_loader, source_loader, external_loader = build_loaders(args, train_pkl, external_pkl)
@@ -458,14 +499,17 @@ def train(args) -> None:
             loss_function,
             train_loader,
             device,
-            args.output_head,
+            output_head,
             optimizer=optimizer,
             scheduler=scheduler,
             max_grad_norm=args.max_grad_norm,
+            modality=args.modality,
+            train_text_dropout=args.train_text_dropout,
+            train_text_dropout_scope=args.train_text_dropout_scope,
         )
-        valid_result = run_epoch(model, loss_function, valid_loader, device, args.output_head)
-        source_result = run_epoch(model, loss_function, source_loader, device, args.output_head)
-        external_result = run_epoch(model, loss_function, external_loader, device, args.output_head)
+        valid_result = run_epoch(model, loss_function, valid_loader, device, output_head, modality=args.modality)
+        source_result = run_epoch(model, loss_function, source_loader, device, output_head, modality=args.modality)
+        external_result = run_epoch(model, loss_function, external_loader, device, output_head, modality=args.modality)
         final_source = source_result
         final_external = external_result
 
@@ -478,7 +522,7 @@ def train(args) -> None:
             best_source = result_snapshot(source_result)
             best_external = result_snapshot(external_result)
             best_state = copy.deepcopy(model.state_dict())
-            print(f"[MAGTKD][video] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
+            print(f"[MAGTKD][{args.modality}] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
 
         if args.save_epoch_every > 0 and (epoch % args.save_epoch_every == 0 or epoch == args.epochs):
             save_checkpoint(out_dir / "checkpoints" / f"epoch_{epoch:03d}.pt", model, args, info, epoch, best_epoch, best_score)
@@ -505,14 +549,14 @@ def train(args) -> None:
         }
         epoch_rows.append(row)
         print(
-            f"[MAGTKD][video] epoch={epoch} "
+            f"[MAGTKD][{args.modality}] epoch={epoch} "
             f"train_wf1={(train_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"source_wf1={(source_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"external_wf1={(external_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"time={row['time_sec']}s"
         )
 
-    metrics_path = out_dir / "magtkd_video_epoch_metrics.csv"
+    metrics_path = out_dir / f"magtkd_{args.modality}_epoch_metrics.csv"
     with metrics_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(epoch_rows[0]))
         writer.writeheader()
@@ -521,8 +565,10 @@ def train(args) -> None:
     common_extra = {
         "script": "new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py",
         "baseline": "MAGTKD",
-        "modality": "video",
-        "output_head": args.output_head,
+        "modality": args.modality,
+        "output_head": output_head,
+        "train_text_dropout": args.train_text_dropout,
+        "train_text_dropout_scope": args.train_text_dropout_scope,
         "train_pkl": str(train_pkl),
         "external_test_pkl": str(external_pkl) if external_pkl else "",
         "label_names": ANJS_LABELS,
@@ -560,17 +606,18 @@ def train(args) -> None:
         save_checkpoint(out_dir / "model_best.pt", model, args, info, best_epoch, best_epoch, best_score)
     if best_external_summary:
         print(
-            f"[MAGTKD][video] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
+            f"[MAGTKD][{args.modality}] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
             f"macro_f1={best_external_summary['macro_f1']:.4f} weighted_f1={best_external_summary['weighted_f1']:.4f}"
         )
-    print(f"[MAGTKD][video] reports saved to {out_dir}")
+    print(f"[MAGTKD][{args.modality}] reports saved to {out_dir}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/evaluate MAGTKD on internally aligned ANJS4 video-only features.")
+    parser = argparse.ArgumentParser(description="Train/evaluate MAGTKD on internally aligned ANJS4 text/video features.")
     parser.add_argument("--train_pkl", type=str, required=True)
     parser.add_argument("--external_test_pkl", type=str, default="")
     parser.add_argument("--out_dir", type=str, required=True)
+    parser.add_argument("--modality", choices=["text", "video", "tv"], default="video")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -582,10 +629,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n_head", type=int, default=8)
     parser.add_argument("--temp", type=float, default=2.0)
     parser.add_argument("--clsNum", type=int, default=4)
-    parser.add_argument("--output_head", choices=["text", "audio", "video"], default="video")
+    parser.add_argument("--output_head", choices=["auto", "text", "audio", "video"], default="auto")
     parser.add_argument("--class_weight", action="store_true")
     parser.add_argument("--warmup_steps", type=int, default=-1)
     parser.add_argument("--max_grad_norm", type=float, default=10.0)
+    parser.add_argument("--train_text_dropout", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout_scope", choices=["utterance", "dialogue", "batch"], default="utterance")
     parser.add_argument("--selection_split", choices=["auto", "valid", "source", "external"], default="source")
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
     parser.add_argument("--save_epoch_every", type=int, default=0)

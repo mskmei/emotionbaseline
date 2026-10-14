@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import classification_report, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, classification_report, f1_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import get_linear_schedule_with_warmup
@@ -128,15 +128,43 @@ def partially_load_state_dict(model: nn.Module, checkpoint_path: Path, device: t
 
 def save_report(labels: Iterable[int], preds: Iterable[int], out_path: Path) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    labels = list(labels)
+    preds = list(preds)
+    label_ids = list(range(len(MELD_LABELS)))
     report = classification_report(
-        list(labels),
-        list(preds),
-        labels=list(range(len(MELD_LABELS))),
+        labels,
+        preds,
+        labels=label_ids,
         target_names=MELD_LABELS,
         digits=4,
         zero_division=0,
     )
     out_path.write_text(report, encoding="utf-8")
+    per_p, per_r, per_f1, per_support = precision_recall_fscore_support(
+        labels,
+        preds,
+        labels=label_ids,
+        zero_division=0,
+    )
+    summary = {
+        "label_names": MELD_LABELS,
+        "n_samples": int(len(labels)),
+        "accuracy": float(accuracy_score(labels, preds)) if labels else 0.0,
+        "macro_f1": float(f1_score(labels, preds, labels=label_ids, average="macro", zero_division=0)),
+        "weighted_f1": float(f1_score(labels, preds, labels=label_ids, average="weighted", zero_division=0)),
+        "gold_counts": dict(zip(MELD_LABELS, np.bincount(np.asarray(labels, dtype=np.int64), minlength=len(MELD_LABELS)).astype(int).tolist())),
+        "pred_counts": dict(zip(MELD_LABELS, np.bincount(np.asarray(preds, dtype=np.int64), minlength=len(MELD_LABELS)).astype(int).tolist())),
+        "per_class": {
+            MELD_LABELS[i]: {
+                "precision": float(per_p[i]),
+                "recall": float(per_r[i]),
+                "f1": float(per_f1[i]),
+                "support": int(per_support[i]),
+            }
+            for i in label_ids
+        },
+    }
+    out_path.with_suffix(".summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def get_video_or_zeros(video_path: str, max_seconds: float = 30.0) -> torch.Tensor:
@@ -442,6 +470,22 @@ def modality_hiddens(
     return text_hidden, audio_hidden, video_hidden
 
 
+def apply_train_text_hidden_dropout(text_hidden: torch.Tensor, dropout_prob: float, scope: str) -> torch.Tensor:
+    if dropout_prob <= 0:
+        return text_hidden
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return text_hidden
+    if p >= 1.0:
+        return torch.zeros_like(text_hidden)
+    if scope == "batch":
+        return torch.zeros_like(text_hidden) if torch.rand((), device=text_hidden.device).item() < p else text_hidden
+    if scope in {"utterance", "dialogue"}:
+        mask = (torch.rand((text_hidden.size(0), 1), device=text_hidden.device) >= p).to(dtype=text_hidden.dtype)
+        return text_hidden * mask
+    raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+
+
 def stage_modality_checkpoints(save_root: Path, modality: str) -> None:
     target_root = save_root / modality
     copy_file(save_root / "shared" / "teacher.bin", target_root / "teacher.bin")
@@ -514,6 +558,8 @@ def train_fusion_modality(
             optimizer.zero_grad()
             with torch.no_grad():
                 text_hidden, audio_hidden, video_hidden = modality_hiddens(modality, teacher, video_student, tokens, masks, video)
+                if modality == "tv" and args.train_text_dropout > 0:
+                    text_hidden = apply_train_text_hidden_dropout(text_hidden, args.train_text_dropout, args.train_text_dropout_scope)
             with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
                 logits = fusion(text_hidden, audio_hidden, video_hidden)
                 loss = ce_loss(logits, labels)
@@ -570,6 +616,8 @@ def parse_args():
     parser.add_argument("--video_init_checkpoint", type=str, default="")
     parser.add_argument("--freeze_video_backbone", action="store_true")
     parser.add_argument("--save_epoch_every", type=int, default=0)
+    parser.add_argument("--train_text_dropout", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout_scope", choices=["utterance", "dialogue", "batch"], default="utterance")
     return parser.parse_args()
 
 

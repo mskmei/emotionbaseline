@@ -224,6 +224,43 @@ def sequence_lengths(umask: torch.Tensor) -> List[int]:
     return lengths
 
 
+def make_train_text_dropout_mask_seq_first(text: torch.Tensor, umask: torch.Tensor, dropout_prob: float, scope: str) -> Optional[torch.Tensor]:
+    if dropout_prob <= 0:
+        return None
+    p = min(max(float(dropout_prob), 0.0), 1.0)
+    if p <= 0:
+        return None
+    if p >= 1.0:
+        return torch.zeros((text.size(0), text.size(1), 1), dtype=text.dtype, device=text.device)
+    if scope == "batch":
+        keep = 0.0 if torch.rand((), device=text.device).item() < p else 1.0
+        return torch.full((text.size(0), text.size(1), 1), keep, dtype=text.dtype, device=text.device)
+    if scope == "dialogue":
+        mask = torch.rand((1, text.size(1), 1), device=text.device) >= p
+    elif scope == "utterance":
+        mask = torch.rand((text.size(0), text.size(1), 1), device=text.device) >= p
+    else:
+        raise ValueError(f"Unsupported train_text_dropout_scope={scope!r}")
+    valid = umask.transpose(0, 1).unsqueeze(-1).to(dtype=torch.bool, device=text.device)
+    mask = torch.where(valid, mask, torch.ones_like(mask, dtype=torch.bool))
+    return mask.to(dtype=text.dtype)
+
+
+def apply_train_text_dropout_seq_first(text: torch.Tensor, umask: torch.Tensor, dropout_prob: float, scope: str) -> torch.Tensor:
+    mask = make_train_text_dropout_mask_seq_first(text, umask, dropout_prob, scope)
+    return text if mask is None else text * mask
+
+
+def prepare_inputs(texts: Sequence[torch.Tensor], visuf: torch.Tensor, acouf: torch.Tensor, modality: str):
+    if modality == "text":
+        return list(texts), torch.zeros_like(visuf), torch.zeros_like(acouf)
+    if modality == "tv":
+        return list(texts), visuf, torch.zeros_like(acouf)
+    if modality == "visual":
+        return [torch.zeros_like(text) for text in texts], visuf, torch.zeros_like(acouf)
+    raise ValueError(f"Unsupported modality={modality}")
+
+
 def run_epoch(
     model: Model,
     loss_function: nn.Module,
@@ -232,6 +269,9 @@ def run_epoch(
     epoch: int,
     optimizer: Optional[torch.optim.Optimizer] = None,
     max_grad_norm: float = 0.0,
+    modality: str = "visual",
+    train_text_dropout: float = 0.0,
+    train_text_dropout_scope: str = "utterance",
 ) -> Optional[Dict]:
     if dataloader is None:
         return None
@@ -248,9 +288,14 @@ def run_epoch(
         if train:
             optimizer.zero_grad()
         text1, text2, text3, text4, visuf, acouf, qmask, umask, label = [d.to(device) for d in data[:-1]]
+        texts, visuf, acouf = prepare_inputs([text1, text2, text3, text4], visuf, acouf, modality)
+        if train and modality == "tv" and train_text_dropout > 0:
+            text_mask = make_train_text_dropout_mask_seq_first(texts[0], umask, train_text_dropout, train_text_dropout_scope)
+            if text_mask is not None:
+                texts = [text * text_mask for text in texts]
         lengths = sequence_lengths(umask)
         with torch.set_grad_enabled(train):
-            log_prob, *_ = model([text1, text2, text3, text4], qmask, umask, lengths, acouf, visuf, epoch)
+            log_prob, *_ = model(texts, qmask, umask, lengths, acouf, visuf, epoch)
             labels_flat = torch.cat([label[j][: lengths[j]] for j in range(len(label))])
             valid = labels_flat.ge(0)
             valid_count = int(valid.sum().item())
@@ -368,7 +413,7 @@ def save_checkpoint(path: Path, model: Model, args, info: Dict, epoch: int, best
         {
             "model_state_dict": model.state_dict(),
             "baseline": "CMERC",
-            "modality": "visual",
+            "modality": args.modality,
             "label_names": ANJS_LABELS,
             "info": info,
             "args": vars(args),
@@ -397,6 +442,7 @@ def train(args) -> None:
     print(f"[CMERC] external_test_pkl={external_pkl}")
     print(f"[CMERC] out_dir={out_dir}")
     print(f"[CMERC] device={device}")
+    print(f"[CMERC] modality={args.modality} train_text_dropout={args.train_text_dropout}")
     print(f"[CMERC] feature_info={json.dumps(info, ensure_ascii=False, indent=2)}")
 
     train_loader, valid_loader, source_loader, external_loader = build_loaders(args, train_pkl, external_pkl)
@@ -420,10 +466,21 @@ def train(args) -> None:
 
     for epoch in range(1, args.epochs + 1):
         start = time.time()
-        train_result = run_epoch(model, loss_function, train_loader, device, epoch, optimizer=optimizer, max_grad_norm=args.max_grad_norm)
-        valid_result = run_epoch(model, loss_function, valid_loader, device, epoch)
-        source_result = run_epoch(model, loss_function, source_loader, device, epoch)
-        external_result = run_epoch(model, loss_function, external_loader, device, epoch)
+        train_result = run_epoch(
+            model,
+            loss_function,
+            train_loader,
+            device,
+            epoch,
+            optimizer=optimizer,
+            max_grad_norm=args.max_grad_norm,
+            modality=args.modality,
+            train_text_dropout=args.train_text_dropout,
+            train_text_dropout_scope=args.train_text_dropout_scope,
+        )
+        valid_result = run_epoch(model, loss_function, valid_loader, device, epoch, modality=args.modality)
+        source_result = run_epoch(model, loss_function, source_loader, device, epoch, modality=args.modality)
+        external_result = run_epoch(model, loss_function, external_loader, device, epoch, modality=args.modality)
         final_source = source_result
         final_external = external_result
         selected, selection_split = select_result(args, valid_result, source_result, external_result)
@@ -435,7 +492,7 @@ def train(args) -> None:
             best_source = result_snapshot(source_result)
             best_external = result_snapshot(external_result)
             best_state = copy.deepcopy(model.state_dict())
-            print(f"[CMERC][visual] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
+            print(f"[CMERC][{args.modality}] new best epoch={epoch} split={selection_split} {args.selection_metric}={best_score:.4f}")
         if args.save_epoch_every > 0 and (epoch % args.save_epoch_every == 0 or epoch == args.epochs):
             save_checkpoint(out_dir / "checkpoints" / f"epoch_{epoch:03d}.pt", model, args, info, epoch, best_epoch, best_score)
         row = {
@@ -460,14 +517,14 @@ def train(args) -> None:
         }
         epoch_rows.append(row)
         print(
-            f"[CMERC][visual] epoch={epoch} "
+            f"[CMERC][{args.modality}] epoch={epoch} "
             f"train_wf1={(train_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"source_wf1={(source_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"external_wf1={(external_result or {}).get('weighted_f1', float('nan')):.4f} "
             f"time={row['time_sec']}s"
         )
 
-    metrics_path = out_dir / "cmerc_visual_epoch_metrics.csv"
+    metrics_path = out_dir / f"cmerc_{args.modality}_epoch_metrics.csv"
     with metrics_path.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(epoch_rows[0]))
         writer.writeheader()
@@ -476,7 +533,9 @@ def train(args) -> None:
     common_extra = {
         "script": "new2/CMERC/train_eval_cmerc_visual_anjs.py",
         "baseline": "CMERC",
-        "modality": "visual",
+        "modality": args.modality,
+        "train_text_dropout": args.train_text_dropout,
+        "train_text_dropout_scope": args.train_text_dropout_scope,
         "train_pkl": str(train_pkl),
         "external_test_pkl": str(external_pkl) if external_pkl else "",
         "label_names": ANJS_LABELS,
@@ -515,17 +574,18 @@ def train(args) -> None:
         save_checkpoint(out_dir / "model_best.pt", model, args, info, best_epoch, best_epoch, best_score)
     if best_external_summary:
         print(
-            f"[CMERC][visual] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
+            f"[CMERC][{args.modality}] best_epoch={best_epoch} external acc={best_external_summary['accuracy']:.4f} "
             f"macro_f1={best_external_summary['macro_f1']:.4f} weighted_f1={best_external_summary['weighted_f1']:.4f}"
         )
-    print(f"[CMERC][visual] reports saved to {out_dir}")
+    print(f"[CMERC][{args.modality}] reports saved to {out_dir}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train/evaluate CMERC on internally aligned ANJS4 visual-only features.")
+    parser = argparse.ArgumentParser(description="Train/evaluate CMERC on internally aligned ANJS4 text/visual features.")
     parser.add_argument("--train_pkl", type=str, required=True)
     parser.add_argument("--external_test_pkl", type=str, default="")
     parser.add_argument("--out_dir", type=str, required=True)
+    parser.add_argument("--modality", choices=["text", "visual", "tv"], default="visual")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -537,6 +597,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--focal_gamma", type=float, default=2.5)
     parser.add_argument("--class_weight", action="store_true")
     parser.add_argument("--max_grad_norm", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout", type=float, default=0.0)
+    parser.add_argument("--train_text_dropout_scope", choices=["utterance", "dialogue", "batch"], default="utterance")
     parser.add_argument("--base_model", type=str, default="GRU")
     parser.add_argument("--graph_type", type=str, default="hyper")
     parser.add_argument("--graph_construct", type=str, default="direct")

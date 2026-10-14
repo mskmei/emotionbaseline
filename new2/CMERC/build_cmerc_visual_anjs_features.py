@@ -18,6 +18,7 @@ sys.path.insert(0, str(REPO_ROOT / "new"))
 from anjs_video_common import (  # noqa: E402
     ANJS_LABELS,
     FeatureCache,
+    TextEmbeddingEncoder,
     UtteranceItem,
     VideoEmbeddingEncoder,
     label_counts,
@@ -39,6 +40,7 @@ def encode_dialogues(
     test_ids: Sequence[str],
     valid_ids: Sequence[str],
     encoder: VideoEmbeddingEncoder,
+    text_encoder: TextEmbeddingEncoder | None,
     text_dim: int,
     audio_dim: int,
     n_speakers: int,
@@ -60,14 +62,14 @@ def encode_dialogues(
         "valid_ids": list(valid_ids),
         "meta": {
             **meta,
-            "format": "CMERC_ANJS4_visual_only_dict",
+            "format": "CMERC_ANJS4_dict",
             "label_space": "ANJS4",
             "label_names": ANJS_LABELS,
             "unknown_context_label": -100,
             "text_dim": text_dim,
             "audio_dim": audio_dim,
             "n_speakers": n_speakers,
-            "feature_policy": "cmerc_visual_only_zero_text_audio",
+            "feature_policy": "cmerc_text_video_zero_audio" if text_encoder is not None else "cmerc_visual_only_zero_text_audio",
         },
     }
 
@@ -88,13 +90,13 @@ def encode_dialogues(
                 print(f"[CMERC-FEATURES] video encode {seen}/{total_items} status={status_counts}")
 
         n_items = len(items)
-        text_zero = zeros(n_items, text_dim)
+        text_features = text_encoder.encode_items(items, text_dim) if text_encoder is not None else zeros(n_items, text_dim)
         audio_zero = zeros(n_items, audio_dim)
         visual = np.stack(visual_vectors, axis=0).astype(np.float32) if visual_vectors else np.zeros((0, encoder.dim), dtype=np.float32)
-        data["roberta1"][key] = text_zero.copy()
-        data["roberta2"][key] = text_zero.copy()
-        data["roberta3"][key] = text_zero.copy()
-        data["roberta4"][key] = text_zero.copy()
+        data["roberta1"][key] = text_features.copy()
+        data["roberta2"][key] = text_features.copy()
+        data["roberta3"][key] = text_features.copy()
+        data["roberta4"][key] = text_features.copy()
         data["video_visual"][key] = visual
         data["video_audio"][key] = audio_zero
         data["speakers"][key] = make_speaker_onehot([item.speaker for item in items], n_speakers)
@@ -109,7 +111,7 @@ def encode_dialogues(
 
     summary = {
         "out_pkl": str(out_pkl),
-        "format": "CMERC_ANJS4_visual_only_dict",
+        "format": "CMERC_ANJS4_dict",
         "label_space": "ANJS4",
         "label_names": ANJS_LABELS,
         "unknown_context_label": -100,
@@ -140,7 +142,7 @@ def encode_dialogues(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build CMERC ANJS4 visual-only feature pkls for BOBSL, MELD, and translated eJSL.")
+    parser = argparse.ArgumentParser(description="Build CMERC ANJS4 feature pkls for BOBSL, MELD, and translated eJSL.")
     parser.add_argument("--bobsl_root", type=str, default="/raid_zoe/home/lr/wangyi/sign/bobsl")
     parser.add_argument("--bobsl_train_csv", type=str, default="")
     parser.add_argument("--bobsl_val_csv", type=str, default="")
@@ -167,6 +169,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache_dir", type=str, required=True)
     parser.add_argument("--video_model", type=str, default="facebook/timesformer-base-finetuned-k400")
     parser.add_argument("--video_processor", type=str, default="MCG-NJU/videomae-base")
+    parser.add_argument("--use_text_features", action="store_true")
+    parser.add_argument("--text_model", type=str, default="roberta-large")
+    parser.add_argument("--text_pooling", type=str, default="cls", choices=["cls", "mean", "last"])
+    parser.add_argument("--text_max_length", type=int, default=96)
+    parser.add_argument("--text_batch_size", type=int, default=32)
     parser.add_argument("--local_model_root", type=str, default="")
     parser.add_argument("--num_frames", type=int, default=8)
     parser.add_argument("--video_max_seconds", type=float, default=30.0)
@@ -197,10 +204,24 @@ def main() -> None:
         max_seconds=args.video_max_seconds,
         fp16=args.fp16,
     )
+    text_encoder = None
+    if args.use_text_features:
+        text_encoder = TextEmbeddingEncoder(
+            text_model=args.text_model,
+            cache=cache,
+            device=device,
+            pooling=args.text_pooling,
+            max_length=args.text_max_length,
+            batch_size=args.text_batch_size,
+            local_model_root=args.local_model_root,
+            fp16=args.fp16,
+        )
     print(f"[CMERC-FEATURES] device={device}")
     print(f"[CMERC-FEATURES] cache_dir={cache.root}")
     print(f"[CMERC-FEATURES] video_model={encoder.video_model}")
     print(f"[CMERC-FEATURES] video_processor={encoder.video_processor}")
+    if text_encoder is not None:
+        print(f"[CMERC-FEATURES] text_model={text_encoder.text_model}")
 
     if not args.skip_meld:
         meld_dialogues, meld_train_ids, meld_test_ids, meld_meta = read_meld_dialogues(
@@ -214,6 +235,7 @@ def main() -> None:
             meld_test_ids,
             [],
             encoder,
+            text_encoder,
             args.text_dim,
             args.audio_dim,
             args.n_speakers,
@@ -235,6 +257,7 @@ def main() -> None:
             ejsl_test_ids,
             [],
             encoder,
+            text_encoder,
             args.text_dim,
             args.audio_dim,
             args.n_speakers,
@@ -261,6 +284,7 @@ def main() -> None:
             bobsl_val_ids,
             [],
             encoder,
+            text_encoder,
             args.text_dim,
             args.audio_dim,
             args.n_speakers,
@@ -273,6 +297,7 @@ def main() -> None:
             bobsl_test_ids,
             [],
             encoder,
+            text_encoder,
             args.text_dim,
             args.audio_dim,
             args.n_speakers,
