@@ -19,7 +19,7 @@ def load_json(path: Path) -> Optional[Dict]:
 
 
 def find_config(path: Path, root: Path) -> Dict:
-    cur = path.parent
+    cur = path if path.is_dir() else path.parent
     while True:
         candidate = cur / "config.json"
         data = load_json(candidate)
@@ -152,7 +152,7 @@ def main() -> None:
     print(f"[summary] rows={len(rows)}")
     print(f"[summary] csv={out_csv}")
     print(f"[summary] json={out_json}")
-    for idx, row in enumerate(sorted(rows, key=lambda r: float(r['ejsl_weighted_f1'] or -1), reverse=True)[:20], 1):
+    for idx, row in enumerate(sorted(rows, key=lambda r: float(r['ejsl_weighted_f1'] or -1), reverse=True), 1):
         print(
             f"{idx:02d}. {row['baseline']} {row['run_name']} "
             f"mod={row['modality']} td={row['train_text_dropout']} "
