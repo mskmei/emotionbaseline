@@ -99,7 +99,16 @@ def add_key(source: Dict, source_key: str, target: Dict, target_key: str) -> Non
 
 
 def build_joint(args: argparse.Namespace) -> Dict:
-    meld_path = resolve_path(args.meld_pkl, must_exist=True)
+    source_raw = args.source_pkl or args.meld_pkl
+    if not source_raw:
+        raise ValueError("One of --source_pkl or --meld_pkl is required")
+    source_name = str(args.source_name or "MELD")
+    output_format = (
+        "MAGTKD_first_stage_dict_ANJS4_video_only_joint"
+        if source_name.upper() == "MELD"
+        else f"MAGTKD_{source_name}_dict_ANJS4_video_only_joint"
+    )
+    meld_path = resolve_path(source_raw, must_exist=True)
     bobsl_path = resolve_path(args.bobsl_train_val_pkl, must_exist=True)
     out_path = resolve_path(args.out_pkl, must_exist=False)
     meld = load_payload(meld_path)
@@ -146,14 +155,14 @@ def build_joint(args: argparse.Namespace) -> Dict:
         "test_vids": test_ids,
         "valid_vids": valid_ids,
         "meta": {
-            "format": "MAGTKD_first_stage_dict_ANJS4_video_only_joint",
+            "format": output_format,
             "meld_pkl": str(meld_path),
             "bobsl_train_val_pkl": str(bobsl_path),
             "label_space": "ANJS4",
             "label_names": ANJS_LABELS,
             "unknown_context_label": -100,
             "dims": dims,
-            "source_test_meaning": "MELD test only",
+            "source_test_meaning": f"{source_name} test only",
             "joint_train_policy": {
                 "bobsl_include_val": bool(args.include_bobsl_val),
                 "bobsl_requested_max_train_dialogues": int(args.max_bobsl_train_dialogues),
@@ -171,7 +180,7 @@ def build_joint(args: argparse.Namespace) -> Dict:
     meld_train_keys = [key for key in train_ids if not str(key).startswith("joint_bobsl")]
     summary = {
         "out_pkl": str(out_path),
-        "format": "MAGTKD_first_stage_dict_ANJS4_video_only_joint",
+        "format": payload["meta"]["format"],
         "meld_pkl": str(meld_path),
         "bobsl_train_val_pkl": str(bobsl_path),
         "label_space": "ANJS4",
@@ -183,11 +192,15 @@ def build_joint(args: argparse.Namespace) -> Dict:
         "valid_dialogues": len(valid_ids),
         "meld_train_dialogues": len(meld_train_keys),
         "bobsl_train_dialogues": len(bobsl_train_keys),
-        "source_test_meaning": "MELD test only",
+        "source_test_meaning": f"{source_name} test only",
         "train_label_counts_all": label_counts(target["labels"], train_ids),
         "train_label_counts_meld": label_counts(target["labels"], meld_train_keys),
         "train_label_counts_bobsl": label_counts(target["labels"], bobsl_train_keys),
         "source_test_label_counts_meld": label_counts(target["labels"], test_ids),
+        "source_name": source_name,
+        "source_pkl": str(meld_path),
+        "source_train_dialogues": len(meld_train_keys),
+        "source_test_label_counts": label_counts(target["labels"], test_ids),
         "joint_train_policy": payload["meta"]["joint_train_policy"],
     }
     out_path.with_suffix(out_path.suffix + ".summary.json").write_text(
@@ -201,7 +214,9 @@ def build_joint(args: argparse.Namespace) -> Dict:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build MAGTKD ANJS4 video-only joint pkl: MELD train/dev + sampled BOBSL, MELD test as source.")
-    parser.add_argument("--meld_pkl", type=str, required=True)
+    parser.add_argument("--meld_pkl", type=str, default="", help="Backward-compatible alias for --source_pkl.")
+    parser.add_argument("--source_pkl", type=str, default="")
+    parser.add_argument("--source_name", type=str, default="MELD")
     parser.add_argument("--bobsl_train_val_pkl", type=str, required=True)
     parser.add_argument("--out_pkl", type=str, required=True)
     parser.add_argument("--max_bobsl_train_dialogues", type=int, default=5000)

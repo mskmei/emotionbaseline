@@ -47,6 +47,8 @@ def encode_dialogue_features(
     meta: Dict,
     out_pkl: Path,
 ) -> Dict:
+    dataset_name = str(meta.get("dataset", "MELD"))
+    format_name = "ECERC_IEMOCAP_roberta_tuple_ANJS4" if dataset_name == "IEMOCAP" else "ECERC_MELD_roberta_tuple_ANJS4"
     speakers: Dict[str, np.ndarray] = {}
     emotion_labels: Dict[str, List[int]] = {}
     sentiment_labels: Dict[str, List[int]] = {}
@@ -123,7 +125,7 @@ def encode_dialogue_features(
 
     summary = {
         "out_pkl": str(out_pkl),
-        "format": "ECERC_MELD_roberta_tuple_ANJS4",
+        "format": format_name,
         "label_space": "ANJS4",
         "label_names": ANJS_LABELS,
         "unknown_context_label": -100,

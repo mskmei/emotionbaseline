@@ -22,6 +22,14 @@ MELD_TO_ANJS = {
     "sadness": 3,
 }
 EJSL_TO_ANJS = {"A": 0, "N": 1, "J": 2, "S": 3}
+IEMOCAP_TO_ANJS = {
+    "ang": 0,
+    "fru": 0,
+    "neu": 1,
+    "hap": 2,
+    "exc": 2,
+    "sad": 3,
+}
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,132 @@ def read_meld_dialogues(
         }
         print(f"[MELD] split={split} dialogues={len(keys)} labels={split_summary[split]['label_counts']}")
     return dialogues, train_ids, test_ids, {"root": str(root), "splits": split_summary}
+
+
+def resolve_iemocap_video_path(raw_video_path: str, iemocap_root: Path) -> Path:
+    raw = Path(str(raw_video_path or "").strip())
+    candidates: List[Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    for idx, part in enumerate(raw.parts):
+        if re.fullmatch(r"Session[1-5]", part):
+            candidates.append(iemocap_root.joinpath(*raw.parts[idx:]))
+            break
+    candidates.extend([iemocap_root / raw, iemocap_root / raw.name])
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return candidates[0] if candidates else iemocap_root / raw.name
+
+
+def read_iemocap_dialogues(
+    iemocap_root: str | Path,
+    metadata_root: str | Path,
+    frame_root: str | Path,
+    num_frames: int = 8,
+    fold_dev_into_train: bool = True,
+    require_frames: bool = True,
+    limit_dialogues: int = 0,
+) -> Tuple[Dict[str, List[UtteranceItem]], List[str], List[str], List[str], Dict]:
+    root = resolve_path(iemocap_root, must_exist=True)
+    metadata = resolve_path(metadata_root, must_exist=True)
+    frames = resolve_path(frame_root, must_exist=require_frames)
+    split_files = {split: metadata / f"IEMOCAP_{split}.csv" for split in ["train", "dev", "test"]}
+    for split, path in split_files.items():
+        if not path.exists():
+            raise FileNotFoundError(f"Missing IEMOCAP {split} metadata CSV: {path}")
+
+    dialogues: Dict[str, List[UtteranceItem]] = {}
+    split_ids: Dict[str, List[str]] = {"train": [], "dev": [], "test": []}
+    split_summary: Dict[str, Dict] = {}
+    missing_frames: List[str] = []
+    source_emotions: Dict[str, Dict[str, int]] = {}
+
+    for split in ["train", "dev", "test"]:
+        grouped: Dict[str, List[Tuple[int, UtteranceItem]]] = {}
+        emotion_counts: Dict[str, int] = {}
+        with split_files[split].open("r", encoding="utf-8", errors="replace", newline="") as f:
+            for row in csv.DictReader(f):
+                emotion = normalize_text(str(row.get("Emotion", ""))).lower()
+                if emotion not in IEMOCAP_TO_ANJS:
+                    raise ValueError(f"Unsupported IEMOCAP emotion {emotion!r} in {split_files[split]}")
+                sample_id = normalize_text(str(row.get("Speaker", "")))
+                if not sample_id:
+                    raise ValueError(f"Missing Speaker/utterance id in {split_files[split]}")
+                raw_video = str(row.get("Video_Path", ""))
+                video_path = resolve_iemocap_video_path(raw_video, root)
+                dialogue_stem = video_path.stem or sample_id.rsplit("_", 1)[0]
+                dialogue_numeric = int(row.get("Dialogue_ID", 0))
+                utterance_id = int(row.get("Utterance_ID", 0))
+                dialogue_id = f"iemocap_{split}_dia{dialogue_numeric:04d}_{dialogue_stem}"
+                frame_dir = frames / split / sample_id
+                if require_frames:
+                    expected_paths = [frame_dir / f"{index:04d}.jpg" for index in range(num_frames)]
+                    complete_count = sum(path.is_file() and path.stat().st_size > 0 for path in expected_paths)
+                    if complete_count < num_frames:
+                        missing_frames.append(f"{split}:{sample_id}:{complete_count}")
+                speaker_match = re.search(r"_([FM])\d+$", sample_id)
+                speaker = speaker_match.group(1) if speaker_match else sample_id
+                item = UtteranceItem(
+                    text=normalize_text(str(row.get("Utterance", ""))),
+                    speaker=speaker,
+                    label=IEMOCAP_TO_ANJS[emotion],
+                    source="IEMOCAP",
+                    split=split,
+                    dialogue_id=dialogue_id,
+                    utterance_id=utterance_id,
+                    frame_dir=frame_dir,
+                    sample_id=sample_id,
+                )
+                grouped.setdefault(dialogue_id, []).append((utterance_id, item))
+                emotion_counts[emotion] = emotion_counts.get(emotion, 0) + 1
+
+        keys = sorted(grouped)
+        if limit_dialogues > 0:
+            keys = keys[:limit_dialogues]
+        split_dialogues = {
+            key: [item for _idx, item in sorted(grouped[key], key=lambda pair: pair[0])]
+            for key in keys
+        }
+        dialogues.update(split_dialogues)
+        split_ids[split] = keys
+        source_emotions[split] = emotion_counts
+        split_summary[split] = {
+            "dialogues": len(keys),
+            "utterances": sum(len(split_dialogues[key]) for key in keys),
+            "source_emotion_counts": emotion_counts,
+            "anjs4_label_counts": label_counts(split_dialogues, keys),
+        }
+        print(
+            f"[IEMOCAP] split={split} dialogues={len(keys)} "
+            f"labels={split_summary[split]['anjs4_label_counts']}"
+        )
+
+    if missing_frames:
+        first = ", ".join(missing_frames[:10])
+        raise RuntimeError(
+            f"IEMOCAP frames are incomplete for {len(missing_frames)} utterances; first: {first}. "
+            "Run IEMOCAP/prepare_iemocap_anjs4_frames.py before feature extraction."
+        )
+
+    if fold_dev_into_train:
+        train_ids = split_ids["train"] + split_ids["dev"]
+        valid_ids: List[str] = []
+    else:
+        train_ids = split_ids["train"]
+        valid_ids = split_ids["dev"]
+    test_ids = split_ids["test"]
+    meta = {
+        "root": str(root),
+        "metadata_root": str(metadata),
+        "frame_root": str(frames),
+        "splits": split_summary,
+        "source_emotions": source_emotions,
+        "label_mapping": IEMOCAP_TO_ANJS,
+        "fold_dev_into_train": bool(fold_dev_into_train),
+        "num_frames": int(num_frames),
+    }
+    return dialogues, train_ids, test_ids, valid_ids, meta
 
 
 def read_ejsl_names(path: Path) -> List[str]:
