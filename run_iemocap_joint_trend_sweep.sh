@@ -9,6 +9,12 @@ SWEEP_TAG=${SWEEP_TAG:?Set a descriptive SWEEP_TAG such as lr100 or drop20}
 GPU=${GPU:-0}
 CONFIGS=${CONFIGS:-"iemocap_only joint_b5k joint_b10k"}
 SEEDS=${SEEDS:-"35 36 37 41 42"}
+if [[ -n "${CONFIGS_CSV:-}" ]]; then
+  CONFIGS=${CONFIGS_CSV//,/ }
+fi
+if [[ -n "${SEEDS_CSV:-}" ]]; then
+  SEEDS=${SEEDS_CSV//,/ }
+fi
 
 baseline_lower=$(printf '%s' "$BASELINE" | tr '[:upper:]' '[:lower:]')
 work_root="/raid_zoe/home/lr/maokeyu/sign/${baseline_lower}_bobsl_iemocap_ejsl"
