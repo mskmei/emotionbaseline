@@ -38,6 +38,12 @@ case "$BASELINE" in
     EJSL_PKL=${EJSL_PKL:-/raid_zoe/home/lr/maokeyu/sign/mmgcn_unified_meld_ejsl/ejsl_anjs4_unified.pkl}
     CONFIGS=${CONFIGS:-"iemocap_only joint_b1k joint_b2k joint_b5k joint_b10k"}
     EPOCHS=${EPOCHS:-15}
+    DEFAULT_LR=0.0003
+    DEFAULT_DROPOUT=0.4
+    DEFAULT_BATCH_SIZE=8
+    DEFAULT_WEIGHT_DECAY=0.00003
+    DEFAULT_FOCAL_GAMMA=2.0
+    DEFAULT_LOSS_GAMMA=1.0
     ;;
   ECERC)
     WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/ecerc_bobsl_iemocap_ejsl}
@@ -46,6 +52,12 @@ case "$BASELINE" in
     EJSL_PKL=${EJSL_PKL:-/raid_zoe/home/lr/maokeyu/sign/ecerc_bobsl_meld_ejsl/features/ejsl_ecerc_video_anjs4_translated.pkl}
     CONFIGS=${CONFIGS:-"iemocap_only joint_b1k joint_b2k joint_b5k joint_b10k"}
     EPOCHS=${EPOCHS:-40}
+    DEFAULT_LR=0.00001
+    DEFAULT_DROPOUT=0.0
+    DEFAULT_BATCH_SIZE=32
+    DEFAULT_WEIGHT_DECAY=0.0002
+    DEFAULT_FOCAL_GAMMA=2.0
+    DEFAULT_LOSS_GAMMA=1.0
     ;;
   MAGTKD)
     WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/magtkd_bobsl_iemocap_ejsl}
@@ -54,6 +66,12 @@ case "$BASELINE" in
     EJSL_PKL=${EJSL_PKL:-/raid_zoe/home/lr/maokeyu/sign/magtkd_bobsl_meld_ejsl/features/ejsl_magtkd_video_anjs4_translated.pkl}
     CONFIGS=${CONFIGS:-"iemocap_only joint_b1k joint_b2k joint_b5k joint_b10k"}
     EPOCHS=${EPOCHS:-30}
+    DEFAULT_LR=0.0001
+    DEFAULT_DROPOUT=0.5
+    DEFAULT_BATCH_SIZE=16
+    DEFAULT_WEIGHT_DECAY=0.000001
+    DEFAULT_FOCAL_GAMMA=2.0
+    DEFAULT_LOSS_GAMMA=1.0
     ;;
   CMERC)
     WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl}
@@ -62,6 +80,12 @@ case "$BASELINE" in
     EJSL_PKL=${EJSL_PKL:-/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/ejsl_cmerc_visual_anjs4_translated.pkl}
     CONFIGS=${CONFIGS:-"iemocap_only joint_b1k joint_b2k joint_b5k joint_b10k"}
     EPOCHS=${EPOCHS:-40}
+    DEFAULT_LR=0.0001
+    DEFAULT_DROPOUT=0.4
+    DEFAULT_BATCH_SIZE=8
+    DEFAULT_WEIGHT_DECAY=0.00003
+    DEFAULT_FOCAL_GAMMA=2.5
+    DEFAULT_LOSS_GAMMA=1.0
     ;;
   ConxGNN)
     WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_iemocap_ejsl}
@@ -70,12 +94,25 @@ case "$BASELINE" in
     EJSL_PKL=${EJSL_PKL:-/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_meld_ejsl/features/ejsl_conxgnn_visual_anjs4_translated.pkl}
     CONFIGS=${CONFIGS:-"iemocap_only joint_b1k joint_b2k joint_b5k joint_b10k"}
     EPOCHS=${EPOCHS:-30}
+    DEFAULT_LR=0.0003
+    DEFAULT_DROPOUT=0.8
+    DEFAULT_BATCH_SIZE=64
+    DEFAULT_WEIGHT_DECAY=0.00000001
+    DEFAULT_FOCAL_GAMMA=2.5
+    DEFAULT_LOSS_GAMMA=1.0
     ;;
   *)
     echo "Unknown BASELINE=$BASELINE" >&2
     exit 2
     ;;
 esac
+
+TRAIN_LR=${TRAIN_LR:-$DEFAULT_LR}
+TRAIN_DROPOUT=${TRAIN_DROPOUT:-$DEFAULT_DROPOUT}
+TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-$DEFAULT_BATCH_SIZE}
+TRAIN_WEIGHT_DECAY=${TRAIN_WEIGHT_DECAY:-$DEFAULT_WEIGHT_DECAY}
+TRAIN_FOCAL_GAMMA=${TRAIN_FOCAL_GAMMA:-$DEFAULT_FOCAL_GAMMA}
+TRAIN_LOSS_GAMMA=${TRAIN_LOSS_GAMMA:-$DEFAULT_LOSS_GAMMA}
 
 OUT_ROOT=${OUT_ROOT:-"$WORK_ROOT/video_joint_bobsl_iemocap"}
 JOINT_PKL_ROOT=${JOINT_PKL_ROOT:-"$OUT_ROOT/joint_pkls"}
@@ -217,6 +254,7 @@ from pathlib import Path
 path, config, seed, bobsl_max, train_pkl, lr, dropout = sys.argv[1:8]
 data = {
     "baseline": os.environ["BASELINE"],
+    "sweep_tag": os.environ.get("SWEEP_TAG", ""),
     "config": config,
     "seed": int(seed),
     "bobsl_max": int(bobsl_max),
@@ -228,6 +266,10 @@ data = {
     "epochs": int(os.environ["EPOCHS"]),
     "lr": float(lr),
     "dropout": float(dropout),
+    "batch_size": int(os.environ["TRAIN_BATCH_SIZE"]),
+    "weight_decay": float(os.environ["TRAIN_WEIGHT_DECAY"]),
+    "focal_gamma": float(os.environ["TRAIN_FOCAL_GAMMA"]),
+    "loss_gamma": float(os.environ["TRAIN_LOSS_GAMMA"]),
     "selection_split": "source",
     "selection_metric": "weighted_f1",
 }
@@ -236,7 +278,7 @@ Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", enc
 PY
 }
 
-export BASELINE BOBSL_SAMPLE_SEED EPOCHS
+export BASELINE BOBSL_SAMPLE_SEED EPOCHS TRAIN_BATCH_SIZE TRAIN_WEIGHT_DECAY TRAIN_FOCAL_GAMMA TRAIN_LOSS_GAMMA
 
 run_trial() {
   local config="$1" seed="$2" bobsl_max="$3" train_pkl="$4" lr="$5" dropout="$6"
@@ -253,29 +295,29 @@ run_trial() {
   local cmd
   case "$BASELINE" in
     MMGCN)
-      cmd=(python MMGCN/train_eval_mmgcn_unified.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --modalities video --graph_type MMGCN --epochs "$EPOCHS" --batch_size 8 --lr "$lr" --l2 0.00003 --dropout "$dropout" --loss focal --focal_gamma 2.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --seed "$seed")
+      cmd=(python MMGCN/train_eval_mmgcn_unified.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --modalities video --graph_type MMGCN --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --loss focal --focal_gamma "$TRAIN_FOCAL_GAMMA" --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --seed "$seed")
       ;;
     ECERC)
-      cmd=(python new/ECERC/MELD/train_eval_ecerc_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 32 --num_workers 0 --lr 0.00001 --l2 0.0002 --loss_gamma 1.0 --base_layer 1 --hidden_size 128 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new/ECERC/MELD/train_eval_ecerc_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --loss_gamma "$TRAIN_LOSS_GAMMA" --base_layer 1 --hidden_size 128 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
       ;;
     MAGTKD)
-      cmd=(python new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 16 --num_workers 0 --lr 0.0001 --l2 0.000001 --dropout 0.5 --hidden_dim 768 --n_head 8 --temp 2.0 --output_head video --max_grad_norm 10.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --hidden_dim 768 --n_head 8 --temp 2.0 --output_head video --max_grad_norm 10.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
       ;;
     CMERC)
       # CMERC has 1000 learned hyperedge slots. IEMOCAP's longer dialogues can
       # exceed that limit at batch size 16; batch size 8 stays below it.
-      cmd=(python new2/CMERC/train_eval_cmerc_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 8 --num_workers 0 --lr 0.0001 --l2 0.00003 --dropout 0.4 --loss focal --focal_gamma 2.5 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
+      cmd=(python new2/CMERC/train_eval_cmerc_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --loss focal --focal_gamma "$TRAIN_FOCAL_GAMMA" --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
     ConxGNN)
-      cmd=(python new2/ConxGNN/train_eval_conxgnn_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 64 --lr 0.0003 --weight_decay 0.00000001 --drop_rate 0.8 --hidden_size 128 --inter_size 256 --loss ce --focal_gamma 2.5 --ce_loss_param 1.0 --cb_loss_param 0.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new2/ConxGNN/train_eval_conxgnn_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --lr "$lr" --weight_decay "$TRAIN_WEIGHT_DECAY" --drop_rate "$dropout" --hidden_size 128 --inter_size 256 --loss ce --focal_gamma "$TRAIN_FOCAL_GAMMA" --ce_loss_param 1.0 --cb_loss_param 0.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
       ;;
   esac
   run_logged "$LOG_ROOT/${config}_seed${seed}.log" "${cmd[@]}"
 }
 
 for config in $CONFIGS; do
-  lr=0
-  dropout=0
+  lr="$TRAIN_LR"
+  dropout="$TRAIN_DROPOUT"
   case "$config" in
     iemocap_only)
       bobsl_max=0
@@ -291,13 +333,6 @@ for config in $CONFIGS; do
     train_pkl=$(joint_pkl_for "$bobsl_max")
     build_joint_if_needed "$bobsl_max" "$train_pkl"
   fi
-  case "$BASELINE" in
-    MMGCN) lr=0.0003; dropout=0.4 ;;
-    ECERC) lr=0.00001; dropout=0.0 ;;
-    MAGTKD) lr=0.0001; dropout=0.5 ;;
-    CMERC) lr=0.0001; dropout=0.4 ;;
-    ConxGNN) lr=0.0003; dropout=0.8 ;;
-  esac
   for seed in $SEEDS; do
     run_trial "$config" "$seed" "$bobsl_max" "$train_pkl" "$lr" "$dropout"
   done
