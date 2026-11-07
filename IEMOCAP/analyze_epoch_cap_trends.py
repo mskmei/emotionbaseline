@@ -91,6 +91,8 @@ def collect(baseline: str, root: Path, caps: Sequence[int]) -> List[Dict[str, ob
             "lr": config.get("lr", ""),
             "dropout": config.get("dropout", ""),
             "class_weight": config.get("class_weight", ""),
+            "temperature": config.get("temperature", ""),
+            "loss": config.get("loss", ""),
             "metrics_path": str(metrics_path),
         }
         for cap in caps:
@@ -116,6 +118,8 @@ def collect(baseline: str, root: Path, caps: Sequence[int]) -> List[Dict[str, ob
                 "lr": meta["lr"],
                 "dropout": meta["dropout"],
                 "class_weight": meta["class_weight"],
+                "temperature": meta["temperature"],
+                "loss": meta["loss"],
                 "baseline_selected_epoch": base["selected_epoch"],
                 "joint_selected_epoch": joint["selected_epoch"],
                 "baseline_source_wf1": base["source_wf1"],
@@ -152,6 +156,8 @@ def aggregate(rows: Sequence[Dict[str, object]], required_seeds: int) -> List[Di
                 "lr": group[0]["lr"],
                 "dropout": group[0]["dropout"],
                 "class_weight": group[0]["class_weight"],
+                "temperature": group[0]["temperature"],
+                "loss": group[0]["loss"],
                 "joint_source_wf1": source,
                 "joint_source_wf1_std": source_std,
                 "delta_source_wf1": delta_source,
