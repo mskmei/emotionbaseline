@@ -131,6 +131,21 @@ class ConxVisualDataset:
         }
 
 
+def validate_hyperedge_capacity(name: str, dataset: Optional[ConxVisualDataset], capacity: int = 1000) -> None:
+    if dataset is None or not dataset.samples:
+        return
+    lengths = sorted((len(sample["labels"]) for sample in dataset.samples), reverse=True)
+    largest_batch = lengths[:dataset.batch_size]
+    # ConxGNN creates one edge per utterance and three modality edges per dialogue.
+    required = sum(largest_batch) + 3 * len(largest_batch)
+    print(f"[CONXGNN] {name} worst_case_hyperedges={required}/{capacity}")
+    if required > capacity:
+        raise RuntimeError(
+            f"ConxGNN {name} can require {required} hyperedges at batch_size={dataset.batch_size}, "
+            f"but the model has only {capacity} learned hyperedge slots. Reduce --batch_size."
+        )
+
+
 def infer_dims(payload: Dict) -> Dict[str, int]:
     samples = list(payload.get("train", [])) + list(payload.get("test", [])) + list(payload.get("dev", []))
     if not samples:
@@ -474,6 +489,11 @@ def train(args) -> None:
     external_set = None
     if external_payload is not None:
         external_set = ConxVisualDataset(external_payload.get("test", []), args.batch_size, info["d_text"], info["d_audio"], info["d_visual"])
+
+    validate_hyperedge_capacity("train", trainset)
+    validate_hyperedge_capacity("dev", devset)
+    validate_hyperedge_capacity("source_test", source_set)
+    validate_hyperedge_capacity("external_test", external_set)
 
     config = build_config(args, info, trainset, devset, source_set)
     print(f"[CONXGNN] train_pkl={train_pkl}")

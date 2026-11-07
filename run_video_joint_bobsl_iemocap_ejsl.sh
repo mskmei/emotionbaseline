@@ -96,7 +96,9 @@ case "$BASELINE" in
     EPOCHS=${EPOCHS:-30}
     DEFAULT_LR=0.0003
     DEFAULT_DROPOUT=0.8
-    DEFAULT_BATCH_SIZE=64
+    # ConxGNN has 1000 learned hyperedge slots. IEMOCAP's longer dialogues
+    # require batch size 8 to keep every possible batch below that limit.
+    DEFAULT_BATCH_SIZE=8
     DEFAULT_WEIGHT_DECAY=0.00000001
     DEFAULT_FOCAL_GAMMA=2.5
     DEFAULT_LOSS_GAMMA=1.0
