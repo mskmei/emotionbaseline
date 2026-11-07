@@ -155,11 +155,30 @@ joint_pkl_for() {
   printf '%s\n' "$JOINT_PKL_ROOT/iemocap_bobsl${max_bobsl}_trainonly_sample${BOBSL_SAMPLE_SEED}.pkl"
 }
 
+pickle_is_readable() {
+  local path="$1"
+  python - "$path" <<'PY'
+import pickle
+import sys
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        pickle.load(handle, encoding="latin1")
+except Exception as exc:
+    print(f"[IEMOCAP-JOINT] invalid pickle {sys.argv[1]}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
 build_joint_if_needed() {
   local max_bobsl="$1"
   local out_pkl="$2"
   if [[ "$REBUILD_JOINT" != "1" && -s "$out_pkl" ]]; then
-    return
+    if pickle_is_readable "$out_pkl"; then
+      return
+    fi
+    echo "[$BASELINE-IEMOCAP] rebuilding unreadable joint pkl: $out_pkl" >&2
+    rm -f "$out_pkl" "$out_pkl.summary.json"
   fi
   local builder
   case "$BASELINE" in
@@ -243,7 +262,9 @@ run_trial() {
       cmd=(python new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 16 --num_workers 0 --lr 0.0001 --l2 0.000001 --dropout 0.5 --hidden_dim 768 --n_head 8 --temp 2.0 --output_head video --max_grad_norm 10.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
       ;;
     CMERC)
-      cmd=(python new2/CMERC/train_eval_cmerc_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 16 --num_workers 0 --lr 0.0001 --l2 0.00003 --dropout 0.4 --loss focal --focal_gamma 2.5 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
+      # CMERC has 1000 learned hyperedge slots. IEMOCAP's longer dialogues can
+      # exceed that limit at batch size 16; batch size 8 stays below it.
+      cmd=(python new2/CMERC/train_eval_cmerc_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 8 --num_workers 0 --lr 0.0001 --l2 0.00003 --dropout 0.4 --loss focal --focal_gamma 2.5 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
     ConxGNN)
       cmd=(python new2/ConxGNN/train_eval_conxgnn_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size 64 --lr 0.0003 --weight_decay 0.00000001 --drop_rate 0.8 --hidden_size 128 --inter_size 256 --loss ce --focal_gamma 2.5 --ce_loss_param 1.0 --cb_loss_param 0.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)

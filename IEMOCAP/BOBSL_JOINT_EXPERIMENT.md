@@ -19,6 +19,7 @@ This migration keeps the existing BOBSL + MELD visual experiment intact and adds
 - BOBSL samples remain context-one dialogues and use sample seed 123.
 - Every baseline uses the same five configurations: IEMOCAP-only and joint training with 1k, 2k, 5k, or 10k sampled BOBSL utterances.
 - Training seeds remain `35 36 37 41 42`.
+- CMERC uses batch size 8 for IEMOCAP because its unchanged hypergraph implementation has 1,000 learned hyperedge slots; IEMOCAP dialogue batches can exceed that bound at the MELD batch size of 16.
 - The best checkpoint is selected by source weighted F1, as in the prior MELD scripts. Metrics are then reported on IEMOCAP Session5 and eJSL from that same checkpoint.
 
 The IEMOCAP labels are derived from the existing six-label metadata. This is different from selecting only four original IEMOCAP labels: no `fru` or `exc` examples are discarded.
