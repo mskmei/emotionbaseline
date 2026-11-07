@@ -23,7 +23,7 @@ joint_pkl_root=${JOINT_PKL_ROOT:-"$work_root/video_joint_bobsl_iemocap/joint_pkl
 
 echo "[IEMOCAP-TREND-SWEEP] baseline=$BASELINE tag=$SWEEP_TAG gpu=$GPU"
 echo "[IEMOCAP-TREND-SWEEP] configs=$CONFIGS seeds=$SEEDS out=$out_root"
-echo "[IEMOCAP-TREND-SWEEP] lr=${TRAIN_LR:-default} dropout=${TRAIN_DROPOUT:-default} batch=${TRAIN_BATCH_SIZE:-default}"
+echo "[IEMOCAP-TREND-SWEEP] lr=${TRAIN_LR:-default} dropout=${TRAIN_DROPOUT:-default} batch=${TRAIN_BATCH_SIZE:-default} class_weight=${TRAIN_CLASS_WEIGHT:-default}"
 
 BASELINE="$BASELINE" \
 GPU="$GPU" \

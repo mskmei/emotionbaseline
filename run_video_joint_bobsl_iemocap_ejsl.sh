@@ -115,6 +115,7 @@ TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-$DEFAULT_BATCH_SIZE}
 TRAIN_WEIGHT_DECAY=${TRAIN_WEIGHT_DECAY:-$DEFAULT_WEIGHT_DECAY}
 TRAIN_FOCAL_GAMMA=${TRAIN_FOCAL_GAMMA:-$DEFAULT_FOCAL_GAMMA}
 TRAIN_LOSS_GAMMA=${TRAIN_LOSS_GAMMA:-$DEFAULT_LOSS_GAMMA}
+TRAIN_CLASS_WEIGHT=${TRAIN_CLASS_WEIGHT:-1}
 
 OUT_ROOT=${OUT_ROOT:-"$WORK_ROOT/video_joint_bobsl_iemocap"}
 JOINT_PKL_ROOT=${JOINT_PKL_ROOT:-"$OUT_ROOT/joint_pkls"}
@@ -272,6 +273,7 @@ data = {
     "weight_decay": float(os.environ["TRAIN_WEIGHT_DECAY"]),
     "focal_gamma": float(os.environ["TRAIN_FOCAL_GAMMA"]),
     "loss_gamma": float(os.environ["TRAIN_LOSS_GAMMA"]),
+    "class_weight": None if os.environ["BASELINE"] == "CMERC" else os.environ["TRAIN_CLASS_WEIGHT"] == "1",
     "selection_split": "source",
     "selection_metric": "weighted_f1",
 }
@@ -280,7 +282,7 @@ Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", enc
 PY
 }
 
-export BASELINE BOBSL_SAMPLE_SEED EPOCHS TRAIN_BATCH_SIZE TRAIN_WEIGHT_DECAY TRAIN_FOCAL_GAMMA TRAIN_LOSS_GAMMA
+export BASELINE BOBSL_SAMPLE_SEED EPOCHS TRAIN_BATCH_SIZE TRAIN_WEIGHT_DECAY TRAIN_FOCAL_GAMMA TRAIN_LOSS_GAMMA TRAIN_CLASS_WEIGHT
 
 run_trial() {
   local config="$1" seed="$2" bobsl_max="$3" train_pkl="$4" lr="$5" dropout="$6"
@@ -300,10 +302,10 @@ run_trial() {
       cmd=(python MMGCN/train_eval_mmgcn_unified.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --modalities video --graph_type MMGCN --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --loss focal --focal_gamma "$TRAIN_FOCAL_GAMMA" --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --seed "$seed")
       ;;
     ECERC)
-      cmd=(python new/ECERC/MELD/train_eval_ecerc_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --loss_gamma "$TRAIN_LOSS_GAMMA" --base_layer 1 --hidden_size 128 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new/ECERC/MELD/train_eval_ecerc_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --loss_gamma "$TRAIN_LOSS_GAMMA" --base_layer 1 --hidden_size 128 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
     MAGTKD)
-      cmd=(python new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --hidden_dim 768 --n_head 8 --temp 2.0 --output_head video --max_grad_norm 10.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new/MAGTKD/MELD/train_eval_magtkd_video_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --hidden_dim 768 --n_head 8 --temp 2.0 --output_head video --max_grad_norm 10.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
     CMERC)
       # CMERC has 1000 learned hyperedge slots. IEMOCAP's longer dialogues can
@@ -311,9 +313,18 @@ run_trial() {
       cmd=(python new2/CMERC/train_eval_cmerc_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --num_workers 0 --lr "$lr" --l2 "$TRAIN_WEIGHT_DECAY" --dropout "$dropout" --loss focal --focal_gamma "$TRAIN_FOCAL_GAMMA" --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
     ConxGNN)
-      cmd=(python new2/ConxGNN/train_eval_conxgnn_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --lr "$lr" --weight_decay "$TRAIN_WEIGHT_DECAY" --drop_rate "$dropout" --hidden_size 128 --inter_size 256 --loss ce --focal_gamma "$TRAIN_FOCAL_GAMMA" --ce_loss_param 1.0 --cb_loss_param 0.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY" --class_weight)
+      cmd=(python new2/ConxGNN/train_eval_conxgnn_visual_anjs.py --train_pkl "$train_pkl" --external_test_pkl "$EJSL_PKL" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" --batch_size "$TRAIN_BATCH_SIZE" --lr "$lr" --weight_decay "$TRAIN_WEIGHT_DECAY" --drop_rate "$dropout" --hidden_size 128 --inter_size 256 --loss ce --focal_gamma "$TRAIN_FOCAL_GAMMA" --ce_loss_param 1.0 --cb_loss_param 0.0 --max_grad_norm 5.0 --selection_split source --selection_metric weighted_f1 --save_epoch_every "$SAVE_EPOCH_EVERY")
       ;;
   esac
+  if [[ "$BASELINE" == "MMGCN" ]]; then
+    if [[ "$TRAIN_CLASS_WEIGHT" != "1" ]]; then
+      cmd+=(--no_class_weight)
+    fi
+  elif [[ "$BASELINE" == "ECERC" || "$BASELINE" == "MAGTKD" || "$BASELINE" == "ConxGNN" ]]; then
+    if [[ "$TRAIN_CLASS_WEIGHT" == "1" ]]; then
+      cmd+=(--class_weight)
+    fi
+  fi
   run_logged "$LOG_ROOT/${config}_seed${seed}.log" "${cmd[@]}"
 }
 

@@ -93,6 +93,7 @@ def normalize_rows(corpus: str, raw_rows: Sequence[Dict[str, str]]) -> List[Dict
                 "epochs": row.get("epochs", ""),
                 "lr": row.get("lr", ""),
                 "dropout": row.get("dropout", ""),
+                "class_weight": row.get("class_weight", ""),
             }
         )
     return output
@@ -134,6 +135,7 @@ def paired_seed_rows(rows: Sequence[Dict[str, object]]) -> List[Dict[str, object
                 "epochs": source.get("epochs", ""),
                 "lr": source.get("lr", ""),
                 "dropout": source.get("dropout", ""),
+                "class_weight": source.get("class_weight", ""),
                 "baseline_source_wf1": base_source_score,
                 "joint_source_wf1": source_score,
                 "delta_source_wf1": source_score - base_source_score,
@@ -184,6 +186,7 @@ def aggregate(seed_rows: Sequence[Dict[str, object]], required_seeds: int, min_d
                 "epochs": group[0].get("epochs", ""),
                 "lr": group[0].get("lr", ""),
                 "dropout": group[0].get("dropout", ""),
+                "class_weight": group[0].get("class_weight", ""),
                 "baseline_source_wf1": base_source_mean,
                 "joint_source_wf1": source_mean,
                 "joint_source_wf1_std": source_std,

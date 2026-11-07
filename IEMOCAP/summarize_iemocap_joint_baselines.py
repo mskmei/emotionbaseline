@@ -113,6 +113,7 @@ def collect(baseline: str, root: Path) -> List[Dict[str, Any]]:
             "epochs": config_data.get("epochs", ""),
             "lr": config_data.get("lr", ""),
             "dropout": config_data.get("dropout", ""),
+            "class_weight": config_data.get("class_weight", ""),
             "result_dir": str(result_dir),
         }
         for split, prefix in [("IEMOCAP", "source_test_best"), ("eJSL", "external_test_best")]:
@@ -151,6 +152,7 @@ def summarize(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "epochs": group[0].get("epochs", ""),
             "lr": group[0].get("lr", ""),
             "dropout": group[0].get("dropout", ""),
+            "class_weight": group[0].get("class_weight", ""),
         }
         for metric in ["weighted_f1", "macro_f1", "accuracy", "delta_weighted_f1_vs_iemocap_only"]:
             value_stats = stats(item.get(metric) for item in group)
