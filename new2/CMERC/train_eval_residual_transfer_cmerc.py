@@ -157,6 +157,11 @@ def run_epoch(
                 cross_source_loss = zero
                 stability = zero
                 gate_penalty = zero
+            base_distillation = F.kl_div(
+                outputs["source_log_prob"][source],
+                outputs["base_log_prob"][source].detach().exp(),
+                reduction="batchmean",
+            )
             source_residual_penalty = outputs["source_residual"][source].pow(2).mean()
             loss = (
                 source_loss
@@ -165,6 +170,7 @@ def run_epoch(
                 + args.cross_source_weight * cross_source_loss
                 + args.stability_weight * stability
                 + args.gate_penalty * gate_penalty
+                + args.base_distill_weight * base_distillation
                 + args.source_residual_penalty * source_residual_penalty
             )
             loss.backward()
@@ -353,12 +359,40 @@ def train(args: argparse.Namespace) -> None:
     print(f"[RT-CMERC] context_checkpoint={context_checkpoint_path}")
     print(f"[RT-CMERC] out_dir={out_dir} device={device}")
 
-    best_score = -1.0
+    initial_source = run_epoch(model, source_loader, device, 0, args)
+    initial_external = run_epoch(model, external_loader, device, 0, args)
+    best_score = float(initial_source["fused"][args.selection_metric])
     best_epoch = 0
-    best_state = None
-    best_source = None
-    best_external = None
-    epoch_rows: List[Dict[str, object]] = []
+    best_state = copy.deepcopy(
+        {
+            key: value.detach().cpu()
+            for key, value in model.state_dict().items()
+            if not key.startswith("context_model.")
+        }
+    )
+    best_source = snapshot(initial_source)
+    best_external = snapshot(initial_external)
+    epoch_rows: List[Dict[str, object]] = [
+        {
+            "epoch": 0,
+            "time_sec": 0.0,
+            "train_fused_wf1": float("nan"),
+            "source_fused_wf1": initial_source["fused"]["weighted_f1"],
+            "source_base_wf1": initial_source["base"]["weighted_f1"],
+            "source_adapter_wf1": initial_source["source"]["weighted_f1"],
+            "source_bobsl_wf1": initial_source["bobsl"]["weighted_f1"],
+            "source_gate": float(np.asarray(initial_source["gate"]).mean()),
+            "external_fused_wf1": initial_external["fused"]["weighted_f1"],
+            "external_base_wf1": initial_external["base"]["weighted_f1"],
+            "external_adapter_wf1": initial_external["source"]["weighted_f1"],
+            "external_bobsl_wf1": initial_external["bobsl"]["weighted_f1"],
+            "external_gate": float(np.asarray(initial_external["gate"]).mean()),
+        }
+    ]
+    print(
+        f"[RT-CMERC] epoch=0 source={best_score:.4f} "
+        f"external={initial_external['fused']['weighted_f1']:.4f}"
+    )
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         train_result = run_epoch(model, train_loader, device, epoch, args, optimizer)
@@ -456,6 +490,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cross_source_weight", type=float, default=0.0)
     parser.add_argument("--stability_weight", type=float, default=0.2)
     parser.add_argument("--gate_penalty", type=float, default=0.01)
+    parser.add_argument("--base_distill_weight", type=float, default=1.0)
     parser.add_argument("--source_residual_penalty", type=float, default=0.001)
     parser.add_argument("--source_repeat", type=int, default=2)
     parser.add_argument("--min_domain_samples_per_epoch", type=int, default=500)

@@ -8,13 +8,13 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-python}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
 PHASE=${PHASE:-source}
-PROFILES=${PROFILES:-"s05 s10 s20 s10wide s10low"}
+PROFILES=${PROFILES:-"s010 s025 s050 s025wide s025free"}
 SEEDS=${SEEDS:-35}
 EPOCHS=${EPOCHS:-15}
 OUT_ROOT=${OUT_ROOT:-/raid_zoe/home/lr/maokeyu/sign/residual_transfer_cmerc/screen}
 SOURCE_ROOT=${SOURCE_ROOT:-$OUT_ROOT}
-SOURCE_PROFILE_MELD=${SOURCE_PROFILE_MELD:-s10}
-SOURCE_PROFILE_IEMOCAP=${SOURCE_PROFILE_IEMOCAP:-s10}
+SOURCE_PROFILE_MELD=${SOURCE_PROFILE_MELD:-s025}
+SOURCE_PROFILE_IEMOCAP=${SOURCE_PROFILE_IEMOCAP:-s025}
 CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-0}
 mkdir -p "$OUT_ROOT/logs"
 
@@ -44,11 +44,11 @@ resolve_corpus() {
 
 resolve_profile() {
   case "$1" in
-    s05) PROFILE_ARGS=(--source_scale 0.5 --adapter_hidden_dim 256 --adapter_dropout 0.2 --lr 0.0003) ;;
-    s10) PROFILE_ARGS=(--source_scale 1.0 --adapter_hidden_dim 256 --adapter_dropout 0.2 --lr 0.0003) ;;
-    s20) PROFILE_ARGS=(--source_scale 2.0 --adapter_hidden_dim 256 --adapter_dropout 0.2 --source_residual_penalty 0.005 --lr 0.0003) ;;
-    s10wide) PROFILE_ARGS=(--source_scale 1.0 --adapter_hidden_dim 512 --adapter_dropout 0.3 --lr 0.0002) ;;
-    s10low) PROFILE_ARGS=(--source_scale 1.0 --adapter_hidden_dim 128 --adapter_dropout 0.1 --lr 0.0005) ;;
+    s010) PROFILE_ARGS=(--source_scale 0.10 --adapter_hidden_dim 128 --adapter_dropout 0.2 --base_distill_weight 2.0 --source_residual_penalty 0.01 --lr 0.00001) ;;
+    s025) PROFILE_ARGS=(--source_scale 0.25 --adapter_hidden_dim 128 --adapter_dropout 0.2 --base_distill_weight 2.0 --source_residual_penalty 0.01 --lr 0.00003) ;;
+    s050) PROFILE_ARGS=(--source_scale 0.50 --adapter_hidden_dim 128 --adapter_dropout 0.2 --base_distill_weight 5.0 --source_residual_penalty 0.02 --lr 0.00003) ;;
+    s025wide) PROFILE_ARGS=(--source_scale 0.25 --adapter_hidden_dim 256 --adapter_dropout 0.3 --base_distill_weight 2.0 --source_residual_penalty 0.01 --lr 0.00002) ;;
+    s025free) PROFILE_ARGS=(--source_scale 0.25 --adapter_hidden_dim 128 --adapter_dropout 0.2 --base_distill_weight 0.5 --source_residual_penalty 0.005 --lr 0.00003) ;;
     r25cw) PROFILE_ARGS=(--transfer_scale 0.25 --gate_bias -3.0 --classwise_gate --stability_weight 0.2 --gate_penalty 0.01) ;;
     r50cw) PROFILE_ARGS=(--transfer_scale 0.5 --gate_bias -3.0 --classwise_gate --stability_weight 0.2 --gate_penalty 0.01) ;;
     r100cw) PROFILE_ARGS=(--transfer_scale 1.0 --gate_bias -3.0 --classwise_gate --stability_weight 0.2 --gate_penalty 0.01) ;;
