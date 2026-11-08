@@ -350,6 +350,23 @@ def train(args: argparse.Namespace) -> None:
     train_dataset = CMERCVisualDataset(train_pkl, "train")
     has_bobsl = any("bobsl" in str(key).lower() for key in train_dataset.keys)
     model = DomainExpertCMERC(context_model, int(info["d_visual"]), args, has_bobsl).to(device)
+    if args.init_source_expert_checkpoint:
+        init_path = resolve_path(args.init_source_expert_checkpoint, must_exist=True)
+        init_checkpoint = load_checkpoint(init_path, device)
+        init_state = init_checkpoint.get("model_state_dict") or {}
+        compatible = {
+            key: value
+            for key, value in init_state.items()
+            if key.startswith("source_expert.") or key.startswith("gate.")
+        }
+        missing, unexpected = model.load_state_dict(compatible, strict=False)
+        print(
+            f"[DE-CMERC] init_source_expert={init_path} loaded={len(compatible)} "
+            f"missing={len(missing)} unexpected={len(unexpected)}"
+        )
+    if args.freeze_source_expert:
+        for parameter in model.source_expert.parameters():
+            parameter.requires_grad = False
     train_loader = make_train_loader(args, train_dataset)
     source_loader = make_eval_loader(args, CMERCVisualDataset(source_pkl, "test"))
     external_loader = make_eval_loader(args, CMERCVisualDataset(external_pkl, "test"))
@@ -440,6 +457,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source_pkl", required=True)
     parser.add_argument("--external_test_pkl", required=True)
     parser.add_argument("--context_checkpoint", required=True)
+    parser.add_argument("--init_source_expert_checkpoint", default="")
+    parser.add_argument("--freeze_source_expert", action="store_true")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=35)
     parser.add_argument("--epochs", type=int, default=15)

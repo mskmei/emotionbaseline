@@ -17,6 +17,8 @@ SOURCE_REPEAT=${SOURCE_REPEAT:-2}
 MIN_DOMAIN_SAMPLES=${MIN_DOMAIN_SAMPLES:-500}
 CONTINUE_ON_ERROR=${CONTINUE_ON_ERROR:-0}
 OUT_ROOT=${OUT_ROOT:-/raid_zoe/home/lr/maokeyu/sign/domain_expert_cmerc/screen}
+SOURCE_INIT_ROOT=${SOURCE_INIT_ROOT:-/raid_zoe/home/lr/maokeyu/sign/domain_expert_cmerc/screen}
+WARMSTART_SOURCE_ONLY=${WARMSTART_SOURCE_ONLY:-0}
 LOG_ROOT=${LOG_ROOT:-$OUT_ROOT/logs}
 mkdir -p "$OUT_ROOT" "$LOG_ROOT"
 
@@ -69,6 +71,12 @@ for corpus in $CORPORA; do
         resolve_corpus "$corpus" "$seed"
         resolve_profile "$profile"
         if [[ "$condition" == source_only ]]; then TRAIN_PKL="$SOURCE_PKL"; else TRAIN_PKL="$JOINT_PKL"; fi
+        INIT_ARGS=()
+        if [[ "$condition" == joint_b5k && "$WARMSTART_SOURCE_ONLY" == 1 ]]; then
+          source_init="$SOURCE_INIT_ROOT/$corpus/source_only/${profile}_seed${seed}/model_best.pt"
+          if [[ ! -s "$source_init" ]]; then echo "[DE-CMERC] missing source init: $source_init" >&2; exit 1; fi
+          INIT_ARGS=(--init_source_expert_checkpoint "$source_init" --freeze_source_expert)
+        fi
         out_dir="$OUT_ROOT/$corpus/$condition/${profile}_seed${seed}"
         done_path="$out_dir/external_test_best_summary.json"
         log_path="$LOG_ROOT/${corpus}_${condition}_${profile}_seed${seed}.log"
@@ -83,7 +91,7 @@ for corpus in $CORPORA; do
           --train_pkl "$TRAIN_PKL" --source_pkl "$SOURCE_PKL" --external_test_pkl "$EXTERNAL_PKL" \
           --context_checkpoint "$CONTEXT_CHECKPOINT" --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" \
           --batch_size "$BATCH_SIZE" --source_repeat "$SOURCE_REPEAT" \
-          --min_domain_samples_per_epoch "$MIN_DOMAIN_SAMPLES" "${PROFILE_ARGS[@]}" 2>&1 | tee -a "$log_path"
+          --min_domain_samples_per_epoch "$MIN_DOMAIN_SAMPLES" "${PROFILE_ARGS[@]}" "${INIT_ARGS[@]}" 2>&1 | tee -a "$log_path"
         status=${PIPESTATUS[0]}
         set -e
         if [[ "$status" -ne 0 ]]; then
