@@ -26,10 +26,11 @@ from decoupled_context_model import DecoupledLocalContextEmotionNet  # noqa: E40
 
 
 class DLCENCESA(nn.Module):
-    def __init__(self, backbone: nn.Module, visual_dim: int, basis: torch.Tensor, args):
+    def __init__(self, backbone: nn.Module, visual_dim: int, basis: torch.Tensor, source_centers: torch.Tensor, args):
         super().__init__()
         self.backbone = backbone
         self.disable_transfer_gate = bool(args.disable_transfer_gate)
+        self.register_buffer("source_centers", torch.as_tensor(source_centers, dtype=torch.float32))
         self.transfer_adapter = ContextDecoupledEmotionSubspaceAdapter(
             visual_dim,
             basis,
@@ -90,6 +91,11 @@ class DLCENCESA(nn.Module):
     def local_log_prob(self, visual):
         return F.log_softmax(self.transfer_head(visual), dim=-1)
 
+    def prototype_log_prob(self, visual, temperature: float):
+        visual = F.normalize(visual, dim=-1)
+        centers = F.normalize(self.source_centers, dim=-1)
+        return F.log_softmax(torch.matmul(visual, centers.transpose(0, 1)) / temperature, dim=-1)
+
 
 def trainable_parameters(model: DLCENCESA) -> Iterable[nn.Parameter]:
     yield from model.transfer_adapter.parameters()
@@ -144,7 +150,9 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
     model.transfer_head.train()
     model.transfer_gate.train()
     bobsl_iterator = cycle(bobsl_loader)
-    totals = {key: 0.0 for key in ("loss", "source", "bobsl", "local", "safety", "residual")}
+    totals = {
+        key: 0.0 for key in ("loss", "source", "bobsl", "prototype", "local", "safety", "residual")
+    }
     steps = 0
     for source_data in source_loader:
         optimizer.zero_grad(set_to_none=True)
@@ -174,12 +182,16 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
         b_targets = b_targets[b_valid]
         b_adapted = base.flatten(b_outputs["transfer_visual"], b_lengths)[b_valid]
         bobsl_loss = weighted_nll(model.local_log_prob(b_adapted), b_targets, weights)
+        prototype_loss = weighted_nll(
+            model.prototype_log_prob(b_adapted, args.prototype_temperature), b_targets, weights
+        )
         b_delta = base.flatten(b_outputs["transfer_delta"], b_lengths)[b_valid]
         residual_loss = residual_loss + b_delta.pow(2).sum(dim=-1).mean()
 
         loss = (
             args.source_weight * source_loss
             + args.bobsl_weight * bobsl_loss
+            + args.prototype_weight * prototype_loss
             + args.local_source_weight * source_local
             + args.safety_weight * safety_loss
             + args.residual_weight * residual_loss
@@ -189,7 +201,7 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
             nn.utils.clip_grad_norm_(list(trainable_parameters(model)), args.max_grad_norm)
         optimizer.step()
         for key, value in {
-            "loss": loss, "source": source_loss, "bobsl": bobsl_loss,
+            "loss": loss, "source": source_loss, "bobsl": bobsl_loss, "prototype": prototype_loss,
             "local": source_local, "safety": safety_loss, "residual": residual_loss,
         }.items():
             totals[key] += float(value.detach().item())
@@ -263,10 +275,10 @@ def train(args):
     bobsl_keys = [key for key in payload["train_ids"] if base.is_bobsl(str(key))]
     checkpoint = torch.load(checkpoint_path, map_location=device)
     backbone, visual_dim = build_backbone(checkpoint, payload, source_keys, device)
-    transfer_basis, _, counts = compute_emotion_subspace(
+    transfer_basis, source_centers, counts = compute_emotion_subspace(
         payload["video_visual"], payload["labels"], source_keys, len(ANJS_LABELS), args.subspace_rank
     )
-    model = DLCENCESA(backbone, visual_dim, transfer_basis, args).to(device)
+    model = DLCENCESA(backbone, visual_dim, transfer_basis, source_centers, args).to(device)
     for parameter in model.backbone.parameters():
         parameter.requires_grad = False
 
@@ -361,6 +373,8 @@ def parse_args():
     parser.add_argument("--safety_weight", type=float, default=0.5)
     parser.add_argument("--safety_margin", type=float, default=0.0)
     parser.add_argument("--residual_weight", type=float, default=0.001)
+    parser.add_argument("--prototype_weight", type=float, default=0.0)
+    parser.add_argument("--prototype_temperature", type=float, default=0.1)
     parser.add_argument("--class_weight", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1"], default="weighted_f1")
