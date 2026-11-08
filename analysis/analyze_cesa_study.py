@@ -27,30 +27,32 @@ def collect(root: Path, is_main: bool):
     rows = []
     for external_path in sorted(root.glob("*/*_seed*/external_test_final_summary.json")):
         run_dir = external_path.parent
-        source = load(run_dir / "source_test_final_summary.json")
-        external = load(external_path)
         base_source = load(run_dir / "source_test_base_summary.json")
         base_external = load(run_dir / "external_test_base_summary.json")
-        row = {
-            "corpus": run_dir.parent.name.upper(),
-            "profile": profile_name(run_dir, is_main),
-            "seed": int(run_dir.name.rsplit("_seed", 1)[1]),
-            "source": source["weighted_f1"],
-            "external": external["weighted_f1"],
-            "base_source": base_source["weighted_f1"],
-            "base_external": base_external["weighted_f1"],
-            "delta_source": source["weighted_f1"] - base_source["weighted_f1"],
-            "delta_external": external["weighted_f1"] - base_external["weighted_f1"],
-        }
-        for split, result, base in (
-            ("source", source, base_source), ("external", external, base_external)
-        ):
-            for label in LABELS:
-                row[f"{split}_{label}_f1"] = result["per_class"][label]["f1"]
-                row[f"delta_{split}_{label}_f1"] = (
-                    result["per_class"][label]["f1"] - base["per_class"][label]["f1"]
-                )
-        rows.append(row)
+        for selection, suffix in (("source_selected", "best"), ("fixed_final", "final")):
+            source = load(run_dir / f"source_test_{suffix}_summary.json")
+            external = load(run_dir / f"external_test_{suffix}_summary.json")
+            row = {
+                "corpus": run_dir.parent.name.upper(),
+                "profile": profile_name(run_dir, is_main),
+                "selection": selection,
+                "seed": int(run_dir.name.rsplit("_seed", 1)[1]),
+                "source": source["weighted_f1"],
+                "external": external["weighted_f1"],
+                "base_source": base_source["weighted_f1"],
+                "base_external": base_external["weighted_f1"],
+                "delta_source": source["weighted_f1"] - base_source["weighted_f1"],
+                "delta_external": external["weighted_f1"] - base_external["weighted_f1"],
+            }
+            for split, result, base in (
+                ("source", source, base_source), ("external", external, base_external)
+            ):
+                for label in LABELS:
+                    row[f"{split}_{label}_f1"] = result["per_class"][label]["f1"]
+                    row[f"delta_{split}_{label}_f1"] = (
+                        result["per_class"][label]["f1"] - base["per_class"][label]["f1"]
+                    )
+            rows.append(row)
     return rows
 
 
@@ -66,10 +68,10 @@ def bootstrap_ci(values, seed=2026, draws=20000):
 def summarize(rows):
     grouped = defaultdict(list)
     for row in rows:
-        grouped[(row["corpus"], row["profile"])].append(row)
+        grouped[(row["corpus"], row["profile"], row["selection"])].append(row)
     output = []
-    for (corpus, profile), group in sorted(grouped.items()):
-        result = {"corpus": corpus, "profile": profile, "n": len(group)}
+    for (corpus, profile, selection), group in sorted(grouped.items()):
+        result = {"corpus": corpus, "profile": profile, "selection": selection, "n": len(group)}
         for metric in ("source", "external", "delta_source", "delta_external"):
             values = [row[metric] for row in group]
             result[f"{metric}_mean"] = float(np.mean(values))
@@ -99,7 +101,10 @@ def save_plot(summary, out_path: Path):
     fig, axes = plt.subplots(1, len(corpora), figsize=(6.3 * len(corpora), 5.2), squeeze=False)
     markers = {"CESA": "o", "fullspace": "s", "no_safety": "^", "context_joint": "X", "rank1": "D"}
     for axis, corpus in zip(axes[0], corpora):
-        items = [row for row in summary if row["corpus"] == corpus]
+        items = [
+            row for row in summary
+            if row["corpus"] == corpus and row["selection"] == "source_selected"
+        ]
         for row in items:
             axis.scatter(
                 row["delta_source_mean"], row["delta_external_mean"],
@@ -146,12 +151,12 @@ def main():
         "",
         "Fixed adaptation budgets; no eJSL labels are used for checkpoint selection.",
         "",
-        "| corpus | method | n | source wF1 | eJSL wF1 | delta source/eJSL | 95% CI source | 95% CI eJSL | Pareto seeds |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| corpus | method | selection | n | source wF1 | eJSL wF1 | delta source/eJSL | 95% CI source | 95% CI eJSL | Pareto seeds |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary:
         lines.append(
-            f"| {row['corpus']} | {row['profile']} | {row['n']} | {row['source_mean']:.4f} | "
+            f"| {row['corpus']} | {row['profile']} | {row['selection']} | {row['n']} | {row['source_mean']:.4f} | "
             f"{row['external_mean']:.4f} | {row['delta_source_mean']:+.4f}/{row['delta_external_mean']:+.4f} | "
             f"[{row['delta_source_ci_low']:+.4f}, {row['delta_source_ci_high']:+.4f}] | "
             f"[{row['delta_external_ci_low']:+.4f}, {row['delta_external_ci_high']:+.4f}] | "

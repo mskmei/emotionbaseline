@@ -22,24 +22,26 @@ def main() -> None:
     rows = []
     for final_external_path in sorted(root.glob("*/*_seed*/external_test_final_summary.json")):
         run_dir = final_external_path.parent
-        final_external = load(final_external_path)
-        final_source = load(run_dir / "source_test_final_summary.json")
         base_source = load(run_dir / "source_test_base_summary.json")
         base_external = load(run_dir / "external_test_base_summary.json")
         profile, seed = run_dir.name.rsplit("_seed", 1)
-        rows.append(
-            {
-                "corpus": run_dir.parent.name.upper(),
-                "profile": profile,
-                "seed": int(seed),
-                "base_source": base_source["weighted_f1"],
-                "source": final_source["weighted_f1"],
-                "delta_source": final_source["weighted_f1"] - base_source["weighted_f1"],
-                "base_external": base_external["weighted_f1"],
-                "external": final_external["weighted_f1"],
-                "delta_external": final_external["weighted_f1"] - base_external["weighted_f1"],
-            }
-        )
+        for selection, suffix in (("source_selected", "best"), ("fixed_final", "final")):
+            source = load(run_dir / f"source_test_{suffix}_summary.json")
+            external = load(run_dir / f"external_test_{suffix}_summary.json")
+            rows.append(
+                {
+                    "corpus": run_dir.parent.name.upper(),
+                    "profile": profile,
+                    "selection": selection,
+                    "seed": int(seed),
+                    "base_source": base_source["weighted_f1"],
+                    "source": source["weighted_f1"],
+                    "delta_source": source["weighted_f1"] - base_source["weighted_f1"],
+                    "base_external": base_external["weighted_f1"],
+                    "external": external["weighted_f1"],
+                    "delta_external": external["weighted_f1"] - base_external["weighted_f1"],
+                }
+            )
     if not rows:
         print(f"[CESA-5-SUMMARY] no runs under {root}")
         return
@@ -49,10 +51,10 @@ def main() -> None:
         writer.writerows(rows)
     grouped = defaultdict(list)
     for row in rows:
-        grouped[(row["corpus"], row["profile"])].append(row)
+        grouped[(row["corpus"], row["profile"], row["selection"])].append(row)
     means = []
-    for (corpus, profile), group in sorted(grouped.items()):
-        result = {"corpus": corpus, "profile": profile, "n": len(group)}
+    for (corpus, profile, selection), group in sorted(grouped.items()):
+        result = {"corpus": corpus, "profile": profile, "selection": selection, "n": len(group)}
         for metric in ("base_source", "source", "delta_source", "base_external", "external", "delta_external"):
             values = np.asarray([row[metric] for row in group], dtype=float)
             result[f"{metric}_mean"] = float(values.mean())
@@ -68,12 +70,12 @@ def main() -> None:
     lines = [
         "# CESA fixed-budget five-seed results",
         "",
-        "| corpus | profile | n | source base->CESA | eJSL base->CESA | delta source/eJSL | positive source/eJSL | strict Pareto |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+        "| corpus | profile | selection | n | source base->CESA | eJSL base->CESA | delta source/eJSL | positive source/eJSL | strict Pareto |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in means:
         lines.append(
-            f"| {row['corpus']} | {row['profile']} | {row['n']} | "
+            f"| {row['corpus']} | {row['profile']} | {row['selection']} | {row['n']} | "
             f"{row['base_source_mean']:.4f}->{row['source_mean']:.4f} | "
             f"{row['base_external_mean']:.4f}->{row['external_mean']:.4f} | "
             f"{row['delta_source_mean']:+.4f}/{row['delta_external_mean']:+.4f} | "
@@ -85,4 +87,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
