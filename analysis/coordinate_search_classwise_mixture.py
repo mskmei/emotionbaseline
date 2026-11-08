@@ -95,13 +95,17 @@ def split_external_payloads(payloads, valid_ratio: float, split_seed: int):
     return valid_payloads, test_payloads, sorted(valid_dialogues)
 
 
-def convex_options(step: float) -> np.ndarray:
+def convex_options(step: float, expert_set: str) -> np.ndarray:
     units = int(round(1.0 / step))
     if not np.isclose(units * step, 1.0):
         raise ValueError("--step must divide 1.0")
     rows = []
     for source_units in range(units + 1):
         for joint_units in range(units - source_units + 1):
+            if expert_set == "anchor_joint" and source_units != 0:
+                continue
+            if expert_set == "anchor_source" and joint_units != 0:
+                continue
             source = source_units * step
             joint = joint_units * step
             rows.append((1.0 - source - joint, source, joint))
@@ -177,6 +181,7 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "class_order",
         "external_valid_ratio",
         "external_valid_dialogues",
+        "expert_set",
         "weights_json",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -195,12 +200,17 @@ def main() -> None:
     parser.add_argument("--tolerances", default="0,0.002,0.005,0.01")
     parser.add_argument("--external_valid_ratio", type=float, default=0.0)
     parser.add_argument("--split_seed", type=int, default=2026)
+    parser.add_argument(
+        "--expert_set",
+        choices=("tri", "anchor_joint", "anchor_source"),
+        default="tri",
+    )
     args = parser.parse_args()
 
     inputs = parse_inputs(args.input)
     main_rows = read_csv(Path(args.main_csv).expanduser())
     main = {(row["baseline"], row["corpus"]): row for row in main_rows}
-    options = convex_options(args.step)
+    options = convex_options(args.step, args.expert_set)
     tolerances = [float(value) for value in args.tolerances.split(",")]
     class_orders = [
         (0, 1, 2, 3),
@@ -295,6 +305,7 @@ def main() -> None:
                 "class_order": "-".join(str(value) for value in best_meta[1]),
                 "external_valid_ratio": args.external_valid_ratio,
                 "external_valid_dialogues": len(valid_dialogues),
+                "expert_set": args.expert_set,
                 "weights_json": json.dumps(np.asarray(best["weights"]).tolist()),
             }
             rows.append(row)
