@@ -150,3 +150,102 @@ class FrozenLogitResidualTransfer(nn.Module):
             "transfer_delta": delta,
             "gate": gate,
         }
+
+
+class SafeTransferGate(nn.Module):
+    """Selects bounded corrections from a frozen source/joint model pair."""
+
+    def __init__(
+        self,
+        visual_dim: int,
+        n_classes: int,
+        hidden_dim: int = 32,
+        dropout: float = 0.1,
+        bias: float = -2.0,
+        max_scale: float = 1.0,
+        mode: str = "reliability",
+        visual_gate_dim: int = 16,
+    ):
+        super().__init__()
+        if mode not in {"global", "reliability", "visual"}:
+            raise ValueError(f"Unsupported safe gate mode={mode}")
+        self.mode = mode
+        self.n_classes = int(n_classes)
+        self.max_scale = float(max_scale)
+        self.global_logits = nn.Parameter(torch.full((n_classes,), float(bias)))
+        base_dim = 3 * n_classes + 6
+        self.visual_projector = None
+        if mode == "visual":
+            self.visual_projector = nn.Sequential(
+                nn.LayerNorm(visual_dim),
+                nn.Linear(visual_dim, visual_gate_dim),
+                nn.GELU(),
+            )
+            base_dim += visual_gate_dim
+        if mode != "global":
+            self.network = nn.Sequential(
+                nn.Linear(base_dim, hidden_dim),
+                nn.LayerNorm(hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, n_classes),
+            )
+            nn.init.zeros_(self.network[-1].weight)
+            nn.init.constant_(self.network[-1].bias, bias)
+        else:
+            self.network = None
+
+    @staticmethod
+    def reliability_features(
+        source_log_prob: torch.Tensor,
+        joint_log_prob: torch.Tensor,
+        utterance_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        source_log_prob = source_log_prob.detach()
+        joint_log_prob = joint_log_prob.detach()
+        source_prob = source_log_prob.exp()
+        joint_prob = joint_log_prob.exp()
+        normalizer = math.log(source_log_prob.shape[-1])
+        source_entropy = -(source_prob * source_log_prob).sum(dim=-1, keepdim=True) / normalizer
+        joint_entropy = -(joint_prob * joint_log_prob).sum(dim=-1, keepdim=True) / normalizer
+        source_confidence = source_prob.max(dim=-1, keepdim=True).values
+        joint_confidence = joint_prob.max(dim=-1, keepdim=True).values
+        disagreement = 0.5 * torch.abs(source_prob - joint_prob).sum(dim=-1, keepdim=True)
+        length_feature = torch.log1p(utterance_lengths.float()).unsqueeze(1) / math.log(51.0)
+        return torch.cat(
+            [
+                source_prob,
+                joint_prob,
+                torch.abs(source_prob - joint_prob),
+                source_entropy,
+                joint_entropy,
+                source_confidence,
+                joint_confidence,
+                disagreement,
+                length_feature,
+            ],
+            dim=-1,
+        )
+
+    def forward(
+        self,
+        source_log_prob: torch.Tensor,
+        joint_log_prob: torch.Tensor,
+        visual: torch.Tensor,
+        utterance_lengths: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        if self.mode == "global":
+            logits = self.global_logits.unsqueeze(0).expand(source_log_prob.shape[0], -1)
+        else:
+            features = self.reliability_features(source_log_prob, joint_log_prob, utterance_lengths)
+            if self.visual_projector is not None:
+                features = torch.cat([features, self.visual_projector(visual.detach())], dim=-1)
+            logits = self.network(features)
+        gate = torch.sigmoid(logits)
+        fused_logits = source_log_prob + self.max_scale * gate * (joint_log_prob - source_log_prob)
+        return {
+            "fused_log_prob": F.log_softmax(fused_logits, dim=-1),
+            "source_log_prob": source_log_prob,
+            "joint_log_prob": joint_log_prob,
+            "gate": gate,
+        }

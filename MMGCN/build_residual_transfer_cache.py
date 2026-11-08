@@ -37,9 +37,10 @@ def loader(path: Path, train: bool, batch_size: int) -> DataLoader:
 
 
 @torch.no_grad()
-def collect(model, dataloader: DataLoader, device: torch.device) -> Dict[str, np.ndarray]:
+def collect(model, joint_model, dataloader: DataLoader, device: torch.device) -> Dict[str, np.ndarray]:
     model.eval()
     base_log_probs: List[np.ndarray] = []
+    joint_log_probs: List[np.ndarray] = []
     visuals: List[np.ndarray] = []
     labels_all: List[np.ndarray] = []
     lengths_all: List[np.ndarray] = []
@@ -50,10 +51,12 @@ def collect(model, dataloader: DataLoader, device: torch.device) -> Dict[str, np
         textf, visuf, acouf = zero_unused_modalities(textf, visuf, acouf, "video")
         lengths = sequence_lengths(umask)
         log_prob, *_ = model(textf, qmask, umask, lengths, acouf, visuf)
+        joint_log_prob, *_ = joint_model(textf, qmask, umask, lengths, acouf, visuf)
         labels_flat = torch.cat([labels[index][:length] for index, length in enumerate(lengths)])
         visual_flat = torch.cat([visuf[:length, index] for index, length in enumerate(lengths)], dim=0)
         valid = labels_flat.ge(0)
         base_log_probs.append(log_prob[valid].cpu().numpy().astype(np.float32))
+        joint_log_probs.append(joint_log_prob[valid].cpu().numpy().astype(np.float32))
         visuals.append(visual_flat[valid].cpu().numpy().astype(np.float32))
         labels_all.append(labels_flat[valid].cpu().numpy().astype(np.int64))
         valid_lengths: List[int] = []
@@ -70,6 +73,8 @@ def collect(model, dataloader: DataLoader, device: torch.device) -> Dict[str, np
         domains.append(np.asarray(valid_domains, dtype=bool))
     return {
         "base_log_prob": np.concatenate(base_log_probs),
+        "source_log_prob": np.concatenate(base_log_probs),
+        "joint_log_prob": np.concatenate(joint_log_probs),
         "visual": np.concatenate(visuals),
         "labels": np.concatenate(labels_all),
         "lengths": np.concatenate(lengths_all),
@@ -93,6 +98,7 @@ def main() -> None:
     parser.add_argument("--joint_pkl", required=True)
     parser.add_argument("--external_pkl", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--joint_checkpoint", default="")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--device", default="cuda")
@@ -112,6 +118,13 @@ def main() -> None:
     info = inspect_feature_pkl(source_pkl)
     model, _, _ = build_model(base_args, info, "video", device)
     model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+    joint_model = model
+    if args.joint_checkpoint:
+        joint_checkpoint = load_torch_checkpoint(Path(args.joint_checkpoint).expanduser().resolve(), device)
+        joint_args = SimpleNamespace(**joint_checkpoint["args"])
+        joint_args.no_cuda = device.type != "cuda"
+        joint_model, _, _ = build_model(joint_args, info, "video", device)
+        joint_model.load_state_dict(joint_checkpoint["model_state_dict"], strict=True)
     jobs = (
         ("source_train.npz", source_pkl, True),
         ("joint_train.npz", joint_pkl, True),
@@ -119,7 +132,7 @@ def main() -> None:
         ("external_test.npz", external_pkl, False),
     )
     for filename, path, train in jobs:
-        save_cache(out_dir / filename, collect(model, loader(path, train, args.batch_size), device))
+        save_cache(out_dir / filename, collect(model, joint_model, loader(path, train, args.batch_size), device))
 
 
 if __name__ == "__main__":
