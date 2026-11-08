@@ -50,6 +50,10 @@ resolve_profile() {
     r100cw) PROFILE_ARGS=(--transfer_scale 1.0 --gate_bias -3.0 --classwise_gate --stability_weight 0.2 --gate_penalty 0.01) ;;
     r50open) PROFILE_ARGS=(--transfer_scale 0.50 --gate_bias -2.0 --classwise_gate --stability_weight 0.1 --gate_penalty 0.005) ;;
     r50cross) PROFILE_ARGS=(--transfer_scale 0.50 --gate_bias -3.0 --classwise_gate --cross_source_weight 0.1 --stability_weight 0.2 --gate_penalty 0.01) ;;
+    r200open) PROFILE_ARGS=(--transfer_scale 2.0 --gate_bias -1.5 --classwise_gate --stability_weight 0.05 --gate_penalty 0.001) ;;
+    r400open) PROFILE_ARGS=(--transfer_scale 4.0 --gate_bias -1.5 --classwise_gate --stability_weight 0.05 --gate_penalty 0.001) ;;
+    r200cross) PROFILE_ARGS=(--transfer_scale 2.0 --gate_bias -1.5 --classwise_gate --cross_source_weight 0.1 --stability_weight 0.05 --gate_penalty 0.001) ;;
+    r200scalar) PROFILE_ARGS=(--transfer_scale 2.0 --gate_bias -1.5 --no-classwise_gate --stability_weight 0.05 --gate_penalty 0.001) ;;
     *) echo "[MMGCN-RT] unknown profile=$1" >&2; return 2 ;;
   esac
 }
