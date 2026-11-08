@@ -44,6 +44,7 @@ def transform(
     lengths = payload["lengths"].astype(np.float32)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model = build_model(checkpoint, visual.shape[1], device)
+    output_branch = "source_log_prob" if checkpoint.get("source_fallback", False) else "fused_log_prob"
     stacked = []
     with torch.no_grad():
         for start in range(0, len(source), batch_size):
@@ -54,7 +55,7 @@ def transform(
                 torch.from_numpy(visual[start:stop]).to(device),
                 torch.from_numpy(lengths[start:stop]).to(device),
             )
-            stacked.append(output["fused_log_prob"].cpu().numpy().astype(np.float32))
+            stacked.append(output[output_branch].cpu().numpy().astype(np.float32))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,
@@ -69,6 +70,7 @@ def transform(
         "input": str(input_path),
         "output": str(output_path),
         "checkpoint": str(checkpoint_path),
+        "output_branch": output_branch,
         "n": len(source),
         "visual_dim": visual.shape[1],
     }
