@@ -36,6 +36,9 @@ profile_args() {
     balanced) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --gate_bias -3.0) ;;
     open) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 0.5 --residual_weight 0.001 --gate_bias -3.0) ;;
     strong_safety) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 2.0 --residual_weight 0.001 --gate_bias -4.0) ;;
+    ungated_b10) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --bobsl_weight 0.10 --disable_transfer_gate) ;;
+    ungated_b25) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --bobsl_weight 0.25 --disable_transfer_gate) ;;
+    gated_b25) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --bobsl_weight 0.25 --gate_bias -4.0) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
 }
