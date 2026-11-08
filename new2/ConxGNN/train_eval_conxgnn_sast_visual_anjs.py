@@ -308,7 +308,11 @@ def train(args):
     for parameter in model.base_model.parameters():
         parameter.requires_grad = False
     labels = [int(label) for sample in source_samples for label in sample["labels"] if int(label) >= 0]
-    class_weights = base_script.make_class_weights(labels, len(ANJS_LABELS), device) if args.class_weight else None
+    class_weights = (
+        base_script.make_class_weights(labels, len(ANJS_LABELS), device)
+        if args.class_weight and not args.unweighted_adapter
+        else None
+    )
     optimizer = torch.optim.AdamW(adapter_parameters(model), lr=args.lr, weight_decay=args.weight_decay)
 
     base_source = evaluate(model, source_test, device, adapted=False)
@@ -430,6 +434,7 @@ def parse_args():
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
     parser.add_argument("--class_weight", action="store_true")
+    parser.add_argument("--unweighted_adapter", action="store_true")
     parser.add_argument("--no_cuda", action="store_true")
     # Filled from the source checkpoint before model construction.
     parser.add_argument("--batch_size", type=int, default=8)
