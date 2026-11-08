@@ -224,7 +224,13 @@ def run_epoch(
         if training:
             optimizer.zero_grad()
         text1, text2, text3, text4, visuf, acouf, qmask, umask, labels = [value.to(device) for value in data[:-1]]
-        texts = [torch.zeros_like(text) for text in (text1, text2, text3, text4)]
+        raw_texts = [text1, text2, text3, text4]
+        if args.modality == "visual":
+            texts = [torch.zeros_like(text) for text in raw_texts]
+        elif args.modality == "tv":
+            texts = raw_texts
+        else:
+            raise ValueError(f"Unsupported modality={args.modality}")
         acouf = torch.zeros_like(acouf)
         lengths = sequence_lengths(umask)
         labels_flat = torch.cat([labels[index][:length] for index, length in enumerate(lengths)])
@@ -429,6 +435,7 @@ def train(args: argparse.Namespace) -> None:
     )
 
     print(f"[DE-CMERC] train_pkl={train_pkl} has_bobsl={has_bobsl}")
+    print(f"[DE-CMERC] modality={args.modality}")
     print(f"[DE-CMERC] context_checkpoint={context_checkpoint_path}")
     print(f"[DE-CMERC] out_dir={out_dir} device={device}")
     best_score = -1.0
@@ -512,6 +519,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--init_source_expert_checkpoint", default="")
     parser.add_argument("--freeze_source_expert", action="store_true")
     parser.add_argument("--freeze_base_gate", action="store_true")
+    parser.add_argument("--modality", choices=["visual", "tv"], default="visual")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=35)
     parser.add_argument("--epochs", type=int, default=15)
