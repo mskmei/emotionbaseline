@@ -352,7 +352,7 @@ def make_report(summary: Sequence[Mapping[str, object]], comparison: Sequence[Ma
             f"{row['delta_source_mean']:+.4f}/{row['delta_external_mean']:+.4f} | "
             f"[{row['delta_source_ci_low']:+.4f}, {row['delta_source_ci_high']:+.4f}] | "
             f"[{row['delta_external_ci_low']:+.4f}, {row['delta_external_ci_high']:+.4f}] | "
-            f"{row['delta_source_positive']}/{row['delta_external_positive']} of {row['n']} | "
+            f"{row['delta_source_positive']}/{row['n']}; {row['delta_external_positive']}/{row['n']} | "
             f"{row['strict_pareto']}/{row['n']} |"
         )
     lines.extend([
