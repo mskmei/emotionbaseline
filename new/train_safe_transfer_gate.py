@@ -78,10 +78,12 @@ def run_epoch(
             optimizer.zero_grad()
         output = model(source, joint, visual, lengths)
         task_loss = class_balanced_loss(output["fused_log_prob"], labels)
-        distillation = F.kl_div(output["fused_log_prob"], source.exp(), reduction="batchmean")
+        clean_source = output["source_log_prob"]
+        clean_joint = output["joint_log_prob"]
+        distillation = F.kl_div(output["fused_log_prob"], clean_source.exp(), reduction="batchmean")
         gate_penalty = output["gate"].mean()
-        source_nll = F.nll_loss(source, labels, reduction="none")
-        joint_nll = F.nll_loss(joint, labels, reduction="none")
+        source_nll = F.nll_loss(clean_source, labels, reduction="none")
+        joint_nll = F.nll_loss(clean_joint, labels, reduction="none")
         route_target = (joint_nll + args.routing_margin < source_nll).float()
         route_probability = output["gate"].mean(dim=1)
         route_losses = F.binary_cross_entropy(route_probability, route_target, reduction="none")
@@ -102,8 +104,8 @@ def run_epoch(
         golds.append(labels.detach().cpu().numpy())
         ids.extend(str(value) for value in item_ids)
         probabilities["fused"].append(output["fused_log_prob"].exp().detach().cpu().numpy())
-        probabilities["source"].append(source.exp().detach().cpu().numpy())
-        probabilities["joint"].append(joint.exp().detach().cpu().numpy())
+        probabilities["source"].append(clean_source.exp().detach().cpu().numpy())
+        probabilities["joint"].append(clean_joint.exp().detach().cpu().numpy())
         gates.append(output["gate"].detach().cpu().numpy())
     gold_array = np.concatenate(golds)
     result: Dict[str, object] = {
@@ -216,6 +218,8 @@ def train(args: argparse.Namespace) -> None:
         max_scale=args.max_scale,
         mode=args.mode,
         visual_gate_dim=args.visual_gate_dim,
+        fusion_space=args.fusion_space,
+        delta_clip=args.delta_clip,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     selection_loader = valid_loader or source_loader
@@ -310,6 +314,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--gate_bias", type=float, default=-2.0)
     parser.add_argument("--max_scale", type=float, default=1.0)
+    parser.add_argument("--fusion_space", choices=["probability", "logprob"], default="probability")
+    parser.add_argument("--delta_clip", type=float, default=6.0)
     parser.add_argument("--distill_weight", type=float, default=0.2)
     parser.add_argument("--gate_penalty", type=float, default=0.01)
     parser.add_argument("--routing_weight", type=float, default=0.0)

@@ -165,6 +165,8 @@ class SafeTransferGate(nn.Module):
         max_scale: float = 1.0,
         mode: str = "reliability",
         visual_gate_dim: int = 16,
+        fusion_space: str = "probability",
+        delta_clip: float = 6.0,
     ):
         super().__init__()
         if mode not in {"global", "reliability", "visual"}:
@@ -172,6 +174,10 @@ class SafeTransferGate(nn.Module):
         self.mode = mode
         self.n_classes = int(n_classes)
         self.max_scale = float(max_scale)
+        if fusion_space not in {"probability", "logprob"}:
+            raise ValueError(f"Unsupported fusion_space={fusion_space}")
+        self.fusion_space = fusion_space
+        self.delta_clip = float(delta_clip)
         self.global_logits = nn.Parameter(torch.full((n_classes,), float(bias)))
         base_dim = 3 * n_classes + 6
         self.visual_projector = None
@@ -206,8 +212,8 @@ class SafeTransferGate(nn.Module):
         source_prob = source_log_prob.exp()
         joint_prob = joint_log_prob.exp()
         normalizer = math.log(source_log_prob.shape[-1])
-        source_entropy = -(source_prob * source_log_prob).sum(dim=-1, keepdim=True) / normalizer
-        joint_entropy = -(joint_prob * joint_log_prob).sum(dim=-1, keepdim=True) / normalizer
+        source_entropy = -(source_prob * source_prob.clamp_min(1e-8).log()).sum(dim=-1, keepdim=True) / normalizer
+        joint_entropy = -(joint_prob * joint_prob.clamp_min(1e-8).log()).sum(dim=-1, keepdim=True) / normalizer
         source_confidence = source_prob.max(dim=-1, keepdim=True).values
         joint_confidence = joint_prob.max(dim=-1, keepdim=True).values
         disagreement = 0.5 * torch.abs(source_prob - joint_prob).sum(dim=-1, keepdim=True)
@@ -234,18 +240,35 @@ class SafeTransferGate(nn.Module):
         visual: torch.Tensor,
         utterance_lengths: torch.Tensor,
     ) -> Dict[str, torch.Tensor]:
+        source_finite = torch.isfinite(source_log_prob).all(dim=-1, keepdim=True)
+        joint_finite = torch.isfinite(joint_log_prob).all(dim=-1, keepdim=True)
+        source_clean = torch.nan_to_num(source_log_prob, nan=-30.0, posinf=0.0, neginf=-30.0)
+        joint_clean = torch.nan_to_num(joint_log_prob, nan=-30.0, posinf=0.0, neginf=-30.0)
+        source_clean = F.log_softmax(source_clean, dim=-1)
+        joint_clean = F.log_softmax(joint_clean, dim=-1)
+        source_clean = torch.where(source_finite, source_clean, joint_clean)
+        joint_clean = torch.where(joint_finite, joint_clean, source_clean)
         if self.mode == "global":
             logits = self.global_logits.unsqueeze(0).expand(source_log_prob.shape[0], -1)
         else:
-            features = self.reliability_features(source_log_prob, joint_log_prob, utterance_lengths)
+            features = self.reliability_features(source_clean, joint_clean, utterance_lengths)
             if self.visual_projector is not None:
                 features = torch.cat([features, self.visual_projector(visual.detach())], dim=-1)
             logits = self.network(features)
         gate = torch.sigmoid(logits)
-        fused_logits = source_log_prob + self.max_scale * gate * (joint_log_prob - source_log_prob)
+        if self.fusion_space == "probability":
+            source_prob = source_clean.exp()
+            joint_prob = joint_clean.exp()
+            fused_prob = source_prob + self.max_scale * gate * (joint_prob - source_prob)
+            fused_prob = fused_prob.clamp_min(1e-8)
+            fused_prob = fused_prob / fused_prob.sum(dim=-1, keepdim=True)
+            fused_log_prob = fused_prob.log()
+        else:
+            delta = (joint_clean - source_clean).clamp(-self.delta_clip, self.delta_clip)
+            fused_log_prob = F.log_softmax(source_clean + self.max_scale * gate * delta, dim=-1)
         return {
-            "fused_log_prob": F.log_softmax(fused_logits, dim=-1),
-            "source_log_prob": source_log_prob,
-            "joint_log_prob": joint_log_prob,
+            "fused_log_prob": fused_log_prob,
+            "source_log_prob": source_clean,
+            "joint_log_prob": joint_clean,
             "gate": gate,
         }
