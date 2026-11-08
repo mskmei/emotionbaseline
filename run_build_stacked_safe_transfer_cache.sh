@@ -11,6 +11,7 @@ THRESHOLD_CSV=${THRESHOLD_CSV:?Set THRESHOLD_CSV}
 OUT_ROOT=${OUT_ROOT:?Set OUT_ROOT}
 PYTHON_BIN=${PYTHON_BIN:-python}
 SEEDS=${SEEDS:-"35 36 37 41 42"}
+EXPERT_BRANCH=${EXPERT_BRANCH:-joint}
 
 for corpus in MELD IEMOCAP; do
   for seed in $SEEDS; do
@@ -29,6 +30,7 @@ for corpus in MELD IEMOCAP; do
     fi
     "$PYTHON_BIN" new/build_stacked_safe_transfer_cache.py \
       --cache_dir "$CACHE_ROOT/$corpus/seed${seed}" \
-      --checkpoint "$checkpoint" --out_dir "$out_dir" --device cpu
+      --checkpoint "$checkpoint" --out_dir "$out_dir" --device cpu \
+      --expert_branch "$EXPERT_BRANCH"
   done
 done

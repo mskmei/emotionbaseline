@@ -36,10 +36,12 @@ def transform(
     checkpoint_path: Path,
     device: torch.device,
     batch_size: int,
+    expert_branch: str,
 ) -> dict:
     payload = np.load(input_path, allow_pickle=True)
-    source = payload["source_log_prob"].astype(np.float32)
-    joint = payload["joint_log_prob"].astype(np.float32)
+    original_source = payload["source_log_prob"].astype(np.float32)
+    original_joint = payload["joint_log_prob"].astype(np.float32)
+    expert = original_joint if expert_branch == "joint" else original_source
     visual = payload["visual"].astype(np.float32)
     lengths = payload["lengths"].astype(np.float32)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -47,11 +49,11 @@ def transform(
     output_branch = "source_log_prob" if checkpoint.get("source_fallback", False) else "fused_log_prob"
     stacked = []
     with torch.no_grad():
-        for start in range(0, len(source), batch_size):
+        for start in range(0, len(original_source), batch_size):
             stop = start + batch_size
             output = model(
-                torch.from_numpy(source[start:stop]).to(device),
-                torch.from_numpy(joint[start:stop]).to(device),
+                torch.from_numpy(original_source[start:stop]).to(device),
+                torch.from_numpy(original_joint[start:stop]).to(device),
                 torch.from_numpy(visual[start:stop]).to(device),
                 torch.from_numpy(lengths[start:stop]).to(device),
             )
@@ -60,7 +62,7 @@ def transform(
     np.savez_compressed(
         output_path,
         source_log_prob=np.concatenate(stacked),
-        joint_log_prob=joint,
+        joint_log_prob=expert,
         visual=visual,
         labels=payload["labels"],
         lengths=lengths,
@@ -71,7 +73,8 @@ def transform(
         "output": str(output_path),
         "checkpoint": str(checkpoint_path),
         "output_branch": output_branch,
-        "n": len(source),
+        "expert_branch": expert_branch,
+        "n": len(original_source),
         "visual_dim": visual.shape[1],
     }
 
@@ -83,6 +86,7 @@ def main() -> None:
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--batch_size", type=int, default=1024)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--expert_branch", choices=("joint", "source"), default="joint")
     args = parser.parse_args()
     cache_dir = Path(args.cache_dir).expanduser()
     out_dir = Path(args.out_dir).expanduser()
@@ -97,6 +101,7 @@ def main() -> None:
                 checkpoint,
                 device,
                 args.batch_size,
+                args.expert_branch,
             )
         )
     (out_dir / "stack_cache_manifest.json").write_text(
