@@ -26,12 +26,16 @@ resolve_corpus() {
   local seed="$2"
   case "$corpus" in
     MELD)
+      BATCH_SIZE=16
       SOURCE_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/meld_cmerc_visual_anjs4.pkl
       JOINT_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/visual_joint_bobsl_meld/joint_pkls/joint_b5k.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/ejsl_cmerc_visual_anjs4_translated.pkl
       CONTEXT_CHECKPOINT=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/visual_joint_bobsl_meld/meld_only_seed${seed}/model_best.pt
       ;;
     IEMOCAP)
+      # CMERC's hyperedge table is bounded; the existing IEMOCAP baseline
+      # uses batch 8 so long dialogues remain within that bound.
+      BATCH_SIZE=8
       SOURCE_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl/features/iemocap_cmerc_visual_anjs4.pkl
       JOINT_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap/joint_pkls/iemocap_bobsl5000_trainonly_sample123.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/ejsl_cmerc_visual_anjs4_translated.pkl
@@ -105,6 +109,7 @@ for corpus in $CORPORA; do
           --out_dir "$out_dir" \
           --seed "$seed" \
           --epochs "$EPOCHS" \
+          --batch_size "$BATCH_SIZE" \
           --source_repeat "$SOURCE_REPEAT" \
           --min_domain_samples_per_epoch "$MIN_DOMAIN_SAMPLES" \
           "${PROFILE_ARGS[@]}" 2>&1 | tee -a "$log_path"
