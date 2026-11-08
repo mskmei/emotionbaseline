@@ -236,6 +236,20 @@ def main() -> None:
     checkpoint = load_checkpoint(checkpoint_path, device)
     overrides = {"seed": cli.seed, "no_cuda": False, "num_workers": cli.num_workers}
     args = checkpoint_args(checkpoint, overrides)
+    if not hasattr(args, "modality"):
+        args.modality = str(checkpoint.get("modality") or ("visual" if cli.baseline == "CMERC" else "video"))
+    if cli.baseline == "MAGTKD":
+        if not hasattr(args, "output_head"):
+            args.output_head = "auto"
+        if not hasattr(args, "class_weight"):
+            args.class_weight = False
+    if cli.baseline == "CMERC":
+        if not hasattr(args, "loss"):
+            args.loss = "focal"
+        if not hasattr(args, "focal_gamma"):
+            args.focal_gamma = 2.5
+        if not hasattr(args, "class_weight"):
+            args.class_weight = False
     batch_size = cli.batch_size or int(getattr(args, "batch_size", 8))
     source_dataset, external_dataset = build_datasets(module, cli.baseline, source_pkl, external_pkl, cli.mode, cli.seed)
     source_loader = make_loader(source_dataset, batch_size, cli.num_workers)
