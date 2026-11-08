@@ -41,6 +41,11 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         writer.writerows(rows)
 
 
+def read_csv(path: Path) -> List[Dict[str, str]]:
+    with path.open(encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
+
+
 def bootstrap_ci(values: Sequence[float], seed: int, draws: int = 20000) -> Tuple[float, float]:
     values = np.asarray(values, dtype=np.float64)
     if len(values) == 1:
@@ -247,7 +252,89 @@ def plot_seed_deltas(seed_rows: Sequence[Mapping[str, object]], out_path: Path) 
     plt.close(fig)
 
 
-def make_report(summary: Sequence[Mapping[str, object]]) -> str:
+def build_baseline_comparison(
+    summary: Sequence[Mapping[str, object]], meld_csv: Path, iemocap_csv: Path
+) -> List[Dict[str, object]]:
+    output: List[Dict[str, object]] = []
+    for corpus, path, source_config in (
+        ("MELD", meld_csv, "meld_only"),
+        ("IEMOCAP", iemocap_csv, "iemocap_only"),
+    ):
+        rows = read_csv(path)
+        for baseline in sorted({row["baseline"] for row in rows}):
+            source = next(
+                row for row in rows
+                if row["baseline"] == baseline and row["config"] == "joint_b5k" and row["split"] == corpus
+            )
+            external = next(
+                row for row in rows
+                if row["baseline"] == baseline and row["config"] == "joint_b5k" and row["split"] == "eJSL"
+            )
+            base_source = next(
+                row for row in rows
+                if row["baseline"] == baseline and row["config"] == source_config and row["split"] == corpus
+            )
+            base_external = next(
+                row for row in rows
+                if row["baseline"] == baseline and row["config"] == source_config and row["split"] == "eJSL"
+            )
+            output.append({
+                "corpus": corpus,
+                "method": baseline,
+                "kind": "joint_b5k baseline",
+                "source_wf1": float(source["weighted_f1_mean"]),
+                "external_wf1": float(external["weighted_f1_mean"]),
+                "delta_source": float(source["weighted_f1_mean"]) - float(base_source["weighted_f1_mean"]),
+                "delta_external": float(external["weighted_f1_mean"]) - float(base_external["weighted_f1_mean"]),
+                "n": int(source["n_seeds"]),
+            })
+        for row in summary:
+            if row["corpus"] != corpus or not bool(row["main"]):
+                continue
+            output.append({
+                "corpus": corpus,
+                "method": f"SAST-{row['model']}",
+                "kind": "proposed",
+                "source_wf1": float(row["source_mean"]),
+                "external_wf1": float(row["external_mean"]),
+                "delta_source": float(row["delta_source_mean"]),
+                "delta_external": float(row["delta_external_mean"]),
+                "n": int(row["n"]),
+            })
+    return output
+
+
+def plot_absolute_comparison(rows: Sequence[Mapping[str, object]], out_path: Path) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+    colors = {"joint_b5k baseline": "#777777", "proposed": "#0072B2"}
+    fig, axes = plt.subplots(1, 2, figsize=(12.4, 5.2))
+    for axis, corpus in zip(axes, ("MELD", "IEMOCAP")):
+        current = [row for row in rows if row["corpus"] == corpus]
+        for row in current:
+            proposed = row["kind"] == "proposed"
+            axis.scatter(
+                float(row["source_wf1"]), float(row["external_wf1"]),
+                s=110 if proposed else 55,
+                marker="*" if proposed else "o",
+                color=colors[str(row["kind"])],
+                edgecolor="black" if proposed else "none", linewidth=0.6,
+            )
+            axis.annotate(str(row["method"]), (float(row["source_wf1"]), float(row["external_wf1"])),
+                          xytext=(4, 4), textcoords="offset points", fontsize=7.5)
+        axis.set_title(corpus)
+        axis.set_xlabel("Source weighted F1")
+        axis.set_ylabel("eJSL weighted F1")
+        axis.grid(alpha=0.2)
+    fig.suptitle("Absolute performance under the aligned BOBSL b5k budget")
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    fig.savefig(out_path, dpi=240, bbox_inches="tight")
+    plt.close(fig)
+
+
+def make_report(summary: Sequence[Mapping[str, object]], comparison: Sequence[Mapping[str, object]]) -> str:
     main = [row for row in summary if bool(row["main"])]
     lines = [
         "# Source-Anchored Safe Transfer (SAST)", "",
@@ -267,6 +354,24 @@ def make_report(summary: Sequence[Mapping[str, object]]) -> str:
             f"[{row['delta_external_ci_low']:+.4f}, {row['delta_external_ci_high']:+.4f}] | "
             f"{row['delta_source_positive']}/{row['delta_external_positive']} of {row['n']} | "
             f"{row['strict_pareto']}/{row['n']} |"
+        )
+    lines.extend([
+        "", "## Comparison with five joint-b5k baselines", "",
+        "| source | method | source wF1 | eJSL wF1 | delta source/eJSL | type |",
+        "|---|---|---:|---:|---:|---|",
+    ])
+    for row in sorted(comparison, key=lambda value: (str(value["corpus"]), -float(value["source_wf1"]))):
+        lines.append(
+            f"| {row['corpus']} | {row['method']} | {row['source_wf1']:.4f} | {row['external_wf1']:.4f} | "
+            f"{row['delta_source']:+.4f}/{row['delta_external']:+.4f} | {row['kind']} |"
+        )
+    for corpus in ("MELD", "IEMOCAP"):
+        current = [row for row in comparison if row["corpus"] == corpus]
+        best_source = max(current, key=lambda row: float(row["source_wf1"]))
+        best_external = max(current, key=lambda row: float(row["external_wf1"]))
+        lines.append(
+            f"- {corpus}: best source wF1 is {best_source['source_wf1']:.4f} ({best_source['method']}); "
+            f"best eJSL wF1 is {best_external['external_wf1']:.4f} ({best_external['method']})."
         )
     lines.extend([
         "", "## Component and capacity ablations", "",
@@ -296,6 +401,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build paper tables and figures for source-anchored transfer.")
     parser.add_argument("--cmerc_root", default="/raid_zoe/home/lr/maokeyu/sign/cesa_cmerc/ablations")
     parser.add_argument("--conx_root", default="/raid_zoe/home/lr/maokeyu/sign/conxgnn_sast/fiveseed")
+    parser.add_argument("--meld_csv", default="/raid_zoe/home/lr/maokeyu/sign/five_baseline_joint_per_class_summary/five_baseline_per_class_config_means.csv")
+    parser.add_argument("--iemocap_csv", default="/raid_zoe/home/lr/maokeyu/sign/five_baseline_bobsl_iemocap_ejsl_summary/iemocap_joint_config_means.csv")
     parser.add_argument("--out_dir", default="/raid_zoe/home/lr/maokeyu/sign/semantic_anchor_paper")
     return parser.parse_args()
 
@@ -308,13 +415,18 @@ def main() -> None:
     if not seed_rows:
         raise RuntimeError("No semantic-anchor runs found")
     summary = summarize(seed_rows)
+    comparison = build_baseline_comparison(
+        summary, Path(args.meld_csv).expanduser(), Path(args.iemocap_csv).expanduser()
+    )
     write_csv(out_dir / "seed_results.csv", seed_rows)
     write_csv(out_dir / "group_results.csv", summary)
-    report = make_report(summary)
+    write_csv(out_dir / "baseline_comparison.csv", comparison)
+    report = make_report(summary, comparison)
     (out_dir / "results.md").write_text(report, encoding="utf-8")
     plot_frontier(summary, out_dir / "transfer_frontier.png")
     plot_classwise(summary, out_dir / "classwise_f1_delta.png")
     plot_seed_deltas(seed_rows, out_dir / "paired_seed_deltas.png")
+    plot_absolute_comparison(comparison, out_dir / "absolute_b5k_comparison.png")
     print(report, end="")
     print(f"[SAST-PAPER] out_dir={out_dir}")
 
