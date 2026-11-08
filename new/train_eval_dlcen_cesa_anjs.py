@@ -71,7 +71,7 @@ class DLCENCESA(nn.Module):
             backbone_entropy = -(backbone_probability * outputs["log_prob"]).sum(dim=-1, keepdim=True)
             local_entropy = -(local_probability * local_log_prob).sum(dim=-1, keepdim=True)
             disagreement = torch.abs(backbone_probability - local_probability).mean(dim=-1, keepdim=True)
-            delta_norm = delta.pow(2).mean(dim=-1, keepdim=True).sqrt()
+            delta_norm = (delta.pow(2).mean(dim=-1, keepdim=True) + 1e-8).sqrt()
             gate_features = torch.cat(
                 [backbone_probability, local_probability, backbone_entropy, local_entropy, disagreement, delta_norm],
                 dim=-1,
