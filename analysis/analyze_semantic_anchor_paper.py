@@ -15,7 +15,7 @@ import numpy as np
 
 LABELS = ("A", "N", "J", "S")
 MAIN_PROFILES = {
-    ("CMERC", "MELD"): "fullspace",
+    ("CMERC", "MELD"): "context_joint",
     ("CMERC", "IEMOCAP"): "context_rank1",
     ("ConxGNN", "MELD"): "rank1_src4",
     ("ConxGNN", "IEMOCAP"): "rank1_safe",
@@ -179,9 +179,9 @@ def plot_frontier(summary: Sequence[Mapping[str, object]], out_path: Path) -> No
         plt.Line2D([0], [0], marker="o", linestyle="", color=color, label=model)
         for model, color in colors.items()
     ]
-    fig.legend(handles=handles, loc="upper center", ncol=2, frameon=False)
-    fig.suptitle("Source-anchored transfer frontier (five seeds)", y=1.01)
-    fig.tight_layout()
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 0.93), ncol=2, frameon=False)
+    fig.suptitle("Source-anchored transfer frontier (five seeds)", y=0.99)
+    fig.tight_layout(rect=(0, 0, 1, 0.86))
     fig.savefig(out_path, dpi=240, bbox_inches="tight")
     plt.close(fig)
 
@@ -285,7 +285,7 @@ def make_report(summary: Sequence[Mapping[str, object]]) -> str:
         "", "## Interpretation", "",
         "1. The frozen source classifier is the semantic anchor: BOBSL is optimized through the existing source decision boundary instead of a disconnected local head.",
         "2. The zero-initialized adapter and source safety loss preserve the source solution; epoch 0 is an explicit reject option when adaptation cannot improve the source metric.",
-        "3. Capacity is corpus- and backbone-dependent. MELD CMERC benefits from a full residual projection, while IEMOCAP CMERC and both ConxGNN settings require rank-1 transfer for stability.",
+        "3. Capacity is corpus- and backbone-dependent. MELD CMERC uses the full rank-3 emotion subspace, while IEMOCAP CMERC and both ConxGNN settings require rank-1 transfer for stability.",
         "4. The same module improves both metrics on two backbones, while the independently built DLCEN backbone did not reproduce the gain. This supports a plug-in transfer mechanism rather than checkpoint routing.",
         "", "With only five paired seeds, exact two-sided sign-flip tests have minimum p=0.0625. Claims should therefore emphasize paired effect size, bootstrap intervals, and seed consistency rather than conventional significance.",
     ])
