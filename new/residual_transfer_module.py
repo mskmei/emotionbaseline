@@ -169,7 +169,7 @@ class SafeTransferGate(nn.Module):
         delta_clip: float = 6.0,
     ):
         super().__init__()
-        if mode not in {"global", "reliability", "visual"}:
+        if mode not in {"global", "reliability", "visual", "sample", "visual_sample"}:
             raise ValueError(f"Unsupported safe gate mode={mode}")
         self.mode = mode
         self.n_classes = int(n_classes)
@@ -181,7 +181,7 @@ class SafeTransferGate(nn.Module):
         self.global_logits = nn.Parameter(torch.full((n_classes,), float(bias)))
         base_dim = 3 * n_classes + 6
         self.visual_projector = None
-        if mode == "visual":
+        if mode in {"visual", "visual_sample"}:
             self.visual_projector = nn.Sequential(
                 nn.LayerNorm(visual_dim),
                 nn.Linear(visual_dim, visual_gate_dim),
@@ -189,12 +189,13 @@ class SafeTransferGate(nn.Module):
             )
             base_dim += visual_gate_dim
         if mode != "global":
+            output_dim = 1 if mode in {"sample", "visual_sample"} else n_classes
             self.network = nn.Sequential(
                 nn.Linear(base_dim, hidden_dim),
                 nn.LayerNorm(hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_dim, n_classes),
+                nn.Linear(hidden_dim, output_dim),
             )
             nn.init.zeros_(self.network[-1].weight)
             nn.init.constant_(self.network[-1].bias, bias)
@@ -256,6 +257,8 @@ class SafeTransferGate(nn.Module):
                 features = torch.cat([features, self.visual_projector(visual.detach())], dim=-1)
             logits = self.network(features)
         gate = torch.sigmoid(logits)
+        if gate.shape[1] == 1:
+            gate = gate.expand(-1, self.n_classes)
         if self.fusion_space == "probability":
             source_prob = source_clean.exp()
             joint_prob = joint_clean.exp()

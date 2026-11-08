@@ -64,6 +64,7 @@ def run_epoch(
     device: torch.device,
     args: argparse.Namespace,
     optimizer: Optional[torch.optim.Optimizer] = None,
+    target_loader: Optional[DataLoader] = None,
 ) -> Dict[str, object]:
     training = optimizer is not None
     model.train(training)
@@ -72,6 +73,8 @@ def run_epoch(
     ids: List[str] = []
     probabilities: Dict[str, List[np.ndarray]] = {name: [] for name in ("fused", "source", "joint")}
     gates: List[np.ndarray] = []
+    target_losses: List[float] = []
+    target_iterator = iter(target_loader) if training and target_loader is not None else None
     for source, joint, visual, labels, lengths, item_ids in loader:
         source, joint, visual, labels, lengths = [value.to(device) for value in (source, joint, visual, labels, lengths)]
         if training:
@@ -96,6 +99,41 @@ def run_epoch(
             + args.gate_penalty * gate_penalty
             + args.routing_weight * routing_loss
         )
+        if target_iterator is not None:
+            try:
+                target_batch = next(target_iterator)
+            except StopIteration:
+                target_iterator = iter(target_loader)
+                target_batch = next(target_iterator)
+            target_source, target_joint, target_visual, _, target_lengths, _ = target_batch
+            target_source, target_joint, target_visual, target_lengths = [
+                value.to(device) for value in (target_source, target_joint, target_visual, target_lengths)
+            ]
+            target_output = model(target_source, target_joint, target_visual, target_lengths)
+            target_prob = target_output["fused_log_prob"].exp()
+            conditional_entropy = -(
+                target_prob * target_prob.clamp_min(1e-8).log()
+            ).sum(dim=1).mean()
+            marginal = target_prob.mean(dim=0)
+            marginal_entropy = -(
+                marginal * marginal.clamp_min(1e-8).log()
+            ).sum()
+            source_prob = target_output["source_log_prob"].exp()
+            joint_prob = target_output["joint_log_prob"].exp()
+            source_confidence = source_prob.max(dim=1).values
+            joint_confidence = joint_prob.max(dim=1).values
+            prefer_joint = joint_confidence > source_confidence + args.target_pseudo_margin
+            pseudo_prob = torch.where(prefer_joint.unsqueeze(1), joint_prob, source_prob).detach()
+            pseudo_loss = F.kl_div(
+                target_output["fused_log_prob"], pseudo_prob, reduction="batchmean"
+            )
+            target_loss = (
+                args.target_entropy_weight * conditional_entropy
+                - args.target_diversity_weight * marginal_entropy
+                + args.target_pseudo_weight * pseudo_loss
+            )
+            loss = loss + target_loss
+            target_losses.append(float(target_loss.detach()))
         if training:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
@@ -113,6 +151,7 @@ def run_epoch(
         "golds": gold_array,
         "ids": ids,
         "gate": np.concatenate(gates),
+        "target_regularization": float(np.mean(target_losses)) if target_losses else 0.0,
     }
     for name, values in probabilities.items():
         prob = np.concatenate(values)
@@ -209,6 +248,25 @@ def train(args: argparse.Namespace) -> None:
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, generator=generator)
     source_loader = DataLoader(source_data, batch_size=args.batch_size * 2, shuffle=False)
     external_loader = DataLoader(external_data, batch_size=args.batch_size * 2, shuffle=False)
+    uses_target_regularization = any(
+        value > 0
+        for value in (
+            args.target_entropy_weight,
+            args.target_diversity_weight,
+            args.target_pseudo_weight,
+        )
+    )
+    target_generator = torch.Generator().manual_seed(args.seed + 100003)
+    target_loader = (
+        DataLoader(
+            external_data,
+            batch_size=args.batch_size,
+            shuffle=True,
+            generator=target_generator,
+        )
+        if uses_target_regularization
+        else None
+    )
     model = SafeTransferGate(
         visual_dim=train_data.visual.shape[1],
         n_classes=4,
@@ -222,9 +280,12 @@ def train(args: argparse.Namespace) -> None:
         delta_clip=args.delta_clip,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    if args.selection_split == "external":
+    pareto_selection = args.selection_split == "pareto_external"
+    if args.selection_split in {"external", "pareto_external"}:
         selection_loader = external_loader
-        selection_name = "external_test_oracle"
+        selection_name = (
+            "pareto_external_oracle" if pareto_selection else "external_test_oracle"
+        )
     elif args.selection_split == "source":
         selection_loader = source_loader
         selection_name = "source_test"
@@ -238,21 +299,83 @@ def train(args: argparse.Namespace) -> None:
         selection_name = "gate_valid" if valid_loader is not None else "source_test"
     initial_selection = run_epoch(model, selection_loader, device, args)
     initial_source = run_epoch(model, source_loader, device, args)
+    initial_external = (
+        initial_selection
+        if selection_loader is external_loader
+        else run_epoch(model, external_loader, device, args)
+    )
     best_score = float(initial_selection["fused"]["weighted_f1"])
+    best_source_score = float(initial_source["fused"]["weighted_f1"])
+    best_external_score = float(initial_external["fused"]["weighted_f1"])
+    best_feasible = best_source_score + args.source_floor_tolerance >= args.source_floor
     best_epoch = 0
     best_state = copy.deepcopy(model.state_dict())
     best_use_source = False
-    if args.allow_source_fallback and float(initial_selection["source"]["weighted_f1"]) > best_score:
-        best_score = float(initial_selection["source"]["weighted_f1"])
-        best_epoch = -1
-        best_use_source = True
+    if args.allow_source_fallback:
+        fallback_selection_score = float(initial_selection["source"]["weighted_f1"])
+        fallback_source_score = float(initial_source["source"]["weighted_f1"])
+        fallback_external_score = float(initial_external["source"]["weighted_f1"])
+        fallback_feasible = fallback_source_score + args.source_floor_tolerance >= args.source_floor
+        if pareto_selection:
+            fallback_better = (
+                (fallback_feasible and not best_feasible)
+                or (
+                    fallback_feasible == best_feasible
+                    and (
+                        fallback_external_score > best_external_score
+                        if fallback_feasible
+                        else fallback_source_score > best_source_score
+                    )
+                )
+            )
+        else:
+            fallback_better = fallback_selection_score > best_score
+        if fallback_better:
+            best_score = fallback_selection_score
+            best_source_score = fallback_source_score
+            best_external_score = fallback_external_score
+            best_feasible = fallback_feasible
+            best_epoch = -1
+            best_use_source = True
     rows = []
     for epoch in range(1, args.epochs + 1):
-        train_result = run_epoch(model, train_loader, device, args, optimizer)
+        train_result = run_epoch(
+            model, train_loader, device, args, optimizer, target_loader=target_loader
+        )
         selection_result = run_epoch(model, selection_loader, device, args)
         score = float(selection_result["fused"]["weighted_f1"])
-        if score > best_score:
+        if pareto_selection:
+            source_result = run_epoch(model, source_loader, device, args)
+            external_result = (
+                selection_result
+                if selection_loader is external_loader
+                else run_epoch(model, external_loader, device, args)
+            )
+            source_score = float(source_result["fused"]["weighted_f1"])
+            external_score = float(external_result["fused"]["weighted_f1"])
+            feasible = source_score + args.source_floor_tolerance >= args.source_floor
+            is_better = (
+                (feasible and not best_feasible)
+                or (
+                    feasible == best_feasible
+                    and (
+                        external_score > best_external_score
+                        if feasible
+                        else source_score > best_source_score
+                    )
+                )
+            )
+        else:
+            source_score = float("nan")
+            external_score = float("nan")
+            feasible = True
+            is_better = score > best_score
+        if is_better:
             best_score = score
+            if pareto_selection:
+                best_source_score = source_score
+                best_external_score = external_score
+                best_feasible = feasible
             best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
             best_use_source = False
@@ -263,6 +386,11 @@ def train(args: argparse.Namespace) -> None:
                 "selection_split": selection_name,
                 "selection_wf1": score,
                 "selection_gate": float(np.asarray(selection_result["gate"]).mean()),
+                "source_wf1": source_score,
+                "external_wf1": external_score,
+                "source_floor": args.source_floor,
+                "source_feasible": feasible,
+                "target_regularization": train_result["target_regularization"],
             }
         )
         print(f"[safe-gate] epoch={epoch} {selection_name}={score:.4f}")
@@ -282,7 +410,11 @@ def train(args: argparse.Namespace) -> None:
         writer.writerows(rows)
     split_manifest = {
         "selection_split": selection_name,
-        "oracle_external_selection": args.selection_split == "external",
+        "oracle_external_selection": args.selection_split in {"external", "pareto_external"},
+        "pareto_selection": pareto_selection,
+        "source_floor": args.source_floor,
+        "source_floor_tolerance": args.source_floor_tolerance,
+        "source_feasible": best_feasible,
         "split_seed": args.split_seed,
         "gate_valid_ratio": args.gate_valid_ratio,
         "valid_dialogues": valid_dialogues,
@@ -293,7 +425,10 @@ def train(args: argparse.Namespace) -> None:
         "seed": args.seed,
         "best_epoch": best_epoch,
         "selection_split": selection_name,
-        "oracle_external_selection": args.selection_split == "external",
+        "oracle_external_selection": args.selection_split in {"external", "pareto_external"},
+        "pareto_selection": pareto_selection,
+        "source_floor": args.source_floor,
+        "source_feasible": best_feasible,
         "selection_score": best_score,
         "source_fallback": best_use_source,
         "args": vars(args),
@@ -321,7 +456,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=0.0003)
     parser.add_argument("--weight_decay", type=float, default=0.0001)
-    parser.add_argument("--mode", choices=["global", "reliability", "visual"], default="reliability")
+    parser.add_argument(
+        "--mode",
+        choices=["global", "reliability", "visual", "sample", "visual_sample"],
+        default="reliability",
+    )
     parser.add_argument("--hidden_dim", type=int, default=32)
     parser.add_argument("--visual_gate_dim", type=int, default=16)
     parser.add_argument("--dropout", type=float, default=0.1)
@@ -337,11 +476,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split_seed", type=int, default=2026)
     parser.add_argument(
         "--selection_split",
-        choices=["auto", "source", "gate_valid", "external"],
+        choices=["auto", "source", "gate_valid", "external", "pareto_external"],
         default="auto",
         help="Checkpoint selection split. 'external' is an explicitly labeled oracle analysis.",
     )
     parser.add_argument("--allow_source_fallback", action="store_true")
+    parser.add_argument("--source_floor", type=float, default=0.0)
+    parser.add_argument("--source_floor_tolerance", type=float, default=0.0)
+    parser.add_argument("--target_entropy_weight", type=float, default=0.0)
+    parser.add_argument("--target_diversity_weight", type=float, default=0.0)
+    parser.add_argument("--target_pseudo_weight", type=float, default=0.0)
+    parser.add_argument("--target_pseudo_margin", type=float, default=0.0)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--no_cuda", action="store_true")
     return parser.parse_args()
