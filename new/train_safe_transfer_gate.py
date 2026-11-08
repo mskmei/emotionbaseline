@@ -13,7 +13,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn import metrics
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from residual_transfer_module import SafeTransferGate
 
@@ -80,7 +80,20 @@ def run_epoch(
         task_loss = class_balanced_loss(output["fused_log_prob"], labels)
         distillation = F.kl_div(output["fused_log_prob"], source.exp(), reduction="batchmean")
         gate_penalty = output["gate"].mean()
-        loss = task_loss + args.distill_weight * distillation + args.gate_penalty * gate_penalty
+        source_nll = F.nll_loss(source, labels, reduction="none")
+        joint_nll = F.nll_loss(joint, labels, reduction="none")
+        route_target = (joint_nll + args.routing_margin < source_nll).float()
+        route_probability = output["gate"].mean(dim=1)
+        route_losses = F.binary_cross_entropy(route_probability, route_target, reduction="none")
+        routing_loss = torch.stack(
+            [route_losses[route_target == value].mean() for value in (0.0, 1.0) if torch.any(route_target == value)]
+        ).mean()
+        loss = (
+            task_loss
+            + args.distill_weight * distillation
+            + args.gate_penalty * gate_penalty
+            + args.routing_weight * routing_loss
+        )
         if training:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
@@ -120,6 +133,31 @@ def snapshot(result: Dict[str, object]) -> Dict[str, object]:
     return output
 
 
+def source_fallback(result: Dict[str, object]) -> Dict[str, object]:
+    output = snapshot(result)
+    output["fused"] = {
+        key: value.copy() if isinstance(value, np.ndarray) else value
+        for key, value in output["source"].items()
+    }
+    output["gate"] = np.zeros_like(output["gate"])
+    return output
+
+
+def dialogue_id(item_id: str) -> str:
+    return str(item_id).rsplit(":utt", 1)[0]
+
+
+def dialogue_split(dataset: PairCacheDataset, valid_ratio: float, split_seed: int):
+    dialogues = sorted({dialogue_id(item_id) for item_id in dataset.ids})
+    generator = random.Random(split_seed)
+    generator.shuffle(dialogues)
+    n_valid = max(1, min(len(dialogues) - 1, int(round(len(dialogues) * valid_ratio))))
+    valid_dialogues = set(dialogues[:n_valid])
+    train_indices = [index for index, item_id in enumerate(dataset.ids) if dialogue_id(item_id) not in valid_dialogues]
+    valid_indices = [index for index, item_id in enumerate(dataset.ids) if dialogue_id(item_id) in valid_dialogues]
+    return train_indices, valid_indices, sorted(valid_dialogues)
+
+
 def save_result(result: Dict[str, object], out_dir: Path, prefix: str, extra: Dict[str, object]) -> None:
     summary: Dict[str, object] = {
         **extra,
@@ -155,7 +193,18 @@ def train(args: argparse.Namespace) -> None:
     source_data = PairCacheDataset(args.source_test_cache)
     external_data = PairCacheDataset(args.external_test_cache)
     generator = torch.Generator().manual_seed(args.seed)
-    train_loader = DataLoader(train_data, batch_size=args.batch_size, shuffle=True, generator=generator)
+    valid_loader = None
+    valid_dialogues: List[str] = []
+    if args.gate_valid_ratio > 0:
+        train_indices, valid_indices, valid_dialogues = dialogue_split(
+            train_data, args.gate_valid_ratio, args.split_seed
+        )
+        train_dataset = Subset(train_data, train_indices)
+        valid_dataset = Subset(train_data, valid_indices)
+        valid_loader = DataLoader(valid_dataset, batch_size=args.batch_size * 2, shuffle=False)
+    else:
+        train_dataset = train_data
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, generator=generator)
     source_loader = DataLoader(source_data, batch_size=args.batch_size * 2, shuffle=False)
     external_loader = DataLoader(external_data, batch_size=args.batch_size * 2, shuffle=False)
     model = SafeTransferGate(
@@ -169,49 +218,78 @@ def train(args: argparse.Namespace) -> None:
         visual_gate_dim=args.visual_gate_dim,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    selection_loader = valid_loader or source_loader
+    selection_name = "gate_valid" if valid_loader is not None else "source_test"
+    initial_selection = run_epoch(model, selection_loader, device, args)
     initial_source = run_epoch(model, source_loader, device, args)
-    initial_external = run_epoch(model, external_loader, device, args)
-    best_score = float(initial_source["fused"]["weighted_f1"])
+    initial_external = run_epoch(model, external_loader, device, args) if valid_loader is None else None
+    best_score = float(initial_selection["fused"]["weighted_f1"])
     best_epoch = 0
     best_state = copy.deepcopy(model.state_dict())
-    best_source = snapshot(initial_source)
-    best_external = snapshot(initial_external)
+    best_use_source = False
+    if args.allow_source_fallback and float(initial_selection["source"]["weighted_f1"]) > best_score:
+        best_score = float(initial_selection["source"]["weighted_f1"])
+        best_epoch = -1
+        best_use_source = True
     rows = []
     for epoch in range(1, args.epochs + 1):
         train_result = run_epoch(model, train_loader, device, args, optimizer)
-        source_result = run_epoch(model, source_loader, device, args)
-        external_result = run_epoch(model, external_loader, device, args)
-        score = float(source_result["fused"]["weighted_f1"])
+        selection_result = run_epoch(model, selection_loader, device, args)
+        score = float(selection_result["fused"]["weighted_f1"])
         if score > best_score:
             best_score = score
             best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
-            best_source = snapshot(source_result)
-            best_external = snapshot(external_result)
+            best_use_source = False
         rows.append(
             {
                 "epoch": epoch,
                 "train_wf1": train_result["fused"]["weighted_f1"],
-                "source_wf1": score,
-                "external_wf1": external_result["fused"]["weighted_f1"],
-                "source_gate": float(np.asarray(source_result["gate"]).mean()),
-                "external_gate": float(np.asarray(external_result["gate"]).mean()),
+                "selection_split": selection_name,
+                "selection_wf1": score,
+                "selection_gate": float(np.asarray(selection_result["gate"]).mean()),
             }
         )
-        print(f"[safe-gate] epoch={epoch} source={score:.4f} external={external_result['fused']['weighted_f1']:.4f}")
+        print(f"[safe-gate] epoch={epoch} {selection_name}={score:.4f}")
+    model.load_state_dict(best_state)
+    best_selection = run_epoch(model, selection_loader, device, args)
+    best_source = run_epoch(model, source_loader, device, args)
+    best_external = run_epoch(model, external_loader, device, args)
+    if best_use_source:
+        best_selection = source_fallback(best_selection)
+        best_source = source_fallback(best_source)
+        best_external = source_fallback(best_external)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     with (out_dir / "epoch_metrics.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    extra = {"seed": args.seed, "best_epoch": best_epoch, "args": vars(args)}
+    split_manifest = {
+        "selection_split": selection_name,
+        "split_seed": args.split_seed,
+        "gate_valid_ratio": args.gate_valid_ratio,
+        "valid_dialogues": valid_dialogues,
+        "source_fallback": best_use_source,
+    }
+    (out_dir / "gate_split.json").write_text(json.dumps(split_manifest, indent=2) + "\n", encoding="utf-8")
+    extra = {
+        "seed": args.seed,
+        "best_epoch": best_epoch,
+        "selection_split": selection_name,
+        "selection_score": best_score,
+        "source_fallback": best_use_source,
+        "args": vars(args),
+    }
+    if valid_loader is not None:
+        save_result(best_selection, out_dir, "gate_valid_best", {**extra, "split": "gate_valid"})
     save_result(best_source, out_dir, "source_test_best", {**extra, "split": "source"})
     save_result(best_external, out_dir, "external_test_best", {**extra, "split": "external"})
     torch.save({"model_state_dict": best_state, **extra}, out_dir / "model_best.pt")
     print(
-        f"[safe-gate] best_epoch={best_epoch} source={best_source['fused']['weighted_f1']:.4f} "
-        f"external={best_external['fused']['weighted_f1']:.4f}"
+        f"[safe-gate] best_epoch={best_epoch} selection={best_score:.4f} "
+        f"source={best_source['fused']['weighted_f1']:.4f} "
+        f"external={best_external['fused']['weighted_f1']:.4f} fallback={best_use_source}"
     )
 
 
@@ -234,6 +312,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_scale", type=float, default=1.0)
     parser.add_argument("--distill_weight", type=float, default=0.2)
     parser.add_argument("--gate_penalty", type=float, default=0.01)
+    parser.add_argument("--routing_weight", type=float, default=0.0)
+    parser.add_argument("--routing_margin", type=float, default=0.0)
+    parser.add_argument("--gate_valid_ratio", type=float, default=0.0)
+    parser.add_argument("--split_seed", type=int, default=2026)
+    parser.add_argument("--allow_source_fallback", action="store_true")
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--no_cuda", action="store_true")
     return parser.parse_args()
