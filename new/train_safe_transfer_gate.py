@@ -222,11 +222,22 @@ def train(args: argparse.Namespace) -> None:
         delta_clip=args.delta_clip,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    selection_loader = valid_loader or source_loader
-    selection_name = "gate_valid" if valid_loader is not None else "source_test"
+    if args.selection_split == "external":
+        selection_loader = external_loader
+        selection_name = "external_test_oracle"
+    elif args.selection_split == "source":
+        selection_loader = source_loader
+        selection_name = "source_test"
+    elif args.selection_split == "gate_valid":
+        if valid_loader is None:
+            raise ValueError("--selection_split gate_valid requires --gate_valid_ratio > 0")
+        selection_loader = valid_loader
+        selection_name = "gate_valid"
+    else:
+        selection_loader = valid_loader or source_loader
+        selection_name = "gate_valid" if valid_loader is not None else "source_test"
     initial_selection = run_epoch(model, selection_loader, device, args)
     initial_source = run_epoch(model, source_loader, device, args)
-    initial_external = run_epoch(model, external_loader, device, args) if valid_loader is None else None
     best_score = float(initial_selection["fused"]["weighted_f1"])
     best_epoch = 0
     best_state = copy.deepcopy(model.state_dict())
@@ -271,6 +282,7 @@ def train(args: argparse.Namespace) -> None:
         writer.writerows(rows)
     split_manifest = {
         "selection_split": selection_name,
+        "oracle_external_selection": args.selection_split == "external",
         "split_seed": args.split_seed,
         "gate_valid_ratio": args.gate_valid_ratio,
         "valid_dialogues": valid_dialogues,
@@ -281,6 +293,7 @@ def train(args: argparse.Namespace) -> None:
         "seed": args.seed,
         "best_epoch": best_epoch,
         "selection_split": selection_name,
+        "oracle_external_selection": args.selection_split == "external",
         "selection_score": best_score,
         "source_fallback": best_use_source,
         "args": vars(args),
@@ -322,6 +335,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--routing_margin", type=float, default=0.0)
     parser.add_argument("--gate_valid_ratio", type=float, default=0.0)
     parser.add_argument("--split_seed", type=int, default=2026)
+    parser.add_argument(
+        "--selection_split",
+        choices=["auto", "source", "gate_valid", "external"],
+        default="auto",
+        help="Checkpoint selection split. 'external' is an explicitly labeled oracle analysis.",
+    )
     parser.add_argument("--allow_source_fallback", action="store_true")
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--no_cuda", action="store_true")

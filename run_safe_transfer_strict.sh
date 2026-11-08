@@ -13,6 +13,7 @@ PROFILES=${PROFILES:-"global reliability routing routing_visual"}
 SEEDS=${SEEDS:-35}
 EPOCHS=${EPOCHS:-30}
 VALID_RATIO=${VALID_RATIO:-0.15}
+SELECTION_SPLIT=${SELECTION_SPLIT:-auto}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/safe_transfer_gate}
 CACHE_ROOT=${CACHE_ROOT:-$WORK_ROOT/cache/$BASELINE}
 OUT_ROOT=${OUT_ROOT:-$WORK_ROOT/strict_runs/$BASELINE}
@@ -58,7 +59,8 @@ for corpus in $CORPORA; do
         --source_test_cache "$cache_dir/source_test.npz" \
         --external_test_cache "$cache_dir/external_test.npz" \
         --out_dir "$out_dir" --seed "$seed" --epochs "$EPOCHS" \
-        --gate_valid_ratio "$VALID_RATIO" --split_seed 2026 --allow_source_fallback \
+        --gate_valid_ratio "$VALID_RATIO" --split_seed 2026 \
+        --selection_split "$SELECTION_SPLIT" --allow_source_fallback \
         "${PROFILE_ARGS[@]}" \
         2>&1 | tee "$OUT_ROOT/logs/${corpus}_${profile}_seed${seed}.log"
     done
