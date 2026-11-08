@@ -374,6 +374,9 @@ def train(args) -> None:
             f"loss={train_metrics['loss']:.4f} time={row['time_sec']}s"
         )
 
+    final_source = copy.deepcopy(source_result)
+    final_external = copy.deepcopy(external_result)
+    final_state = copy.deepcopy(model.state_dict())
     with (out_dir / "epoch_metrics.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
@@ -393,12 +396,18 @@ def train(args) -> None:
     }
     base_script.save_report(base_source, out_dir, "source_test_base", {**common, "selection": "base"})
     base_script.save_report(base_external, out_dir, "external_test_base", {**common, "selection": "base"})
+    base_script.save_report(final_source, out_dir, "source_test_final", {**common, "selection": "fixed_final"})
+    base_script.save_report(final_external, out_dir, "external_test_final", {**common, "selection": "fixed_final"})
     base_script.save_report(best_source, out_dir, "source_test_best", {**common, "selection": "source"})
     base_script.save_report(best_external, out_dir, "external_test_best", {**common, "selection": "source"})
     base_script.save_report(oracle_source, out_dir, "source_test_oracle", {**common, "selection": "diagnostic_oracle", "oracle_epoch": oracle_epoch})
     base_script.save_report(oracle_external, out_dir, "external_test_oracle", {**common, "selection": "diagnostic_oracle", "oracle_epoch": oracle_epoch})
     model.load_state_dict(best_state)
     save_cesa_checkpoint(out_dir / "model_best.pt", model, args, info, basis_meta, best_epoch, best_score)
+    model.load_state_dict(final_state)
+    save_cesa_checkpoint(
+        out_dir / "model_final.pt", model, args, info, basis_meta, args.epochs, final_source[args.selection_metric]
+    )
     model.load_state_dict(oracle_state)
     save_cesa_checkpoint(out_dir / "model_oracle_diagnostic.pt", model, args, info, basis_meta, oracle_epoch, oracle_score)
     print(
@@ -467,4 +476,3 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     train(parse_args())
-
