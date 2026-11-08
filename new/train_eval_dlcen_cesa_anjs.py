@@ -151,7 +151,8 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
     model.transfer_gate.train()
     bobsl_iterator = cycle(bobsl_loader)
     totals = {
-        key: 0.0 for key in ("loss", "source", "bobsl", "prototype", "local", "safety", "residual")
+        key: 0.0
+        for key in ("loss", "source", "bobsl", "bobsl_context", "prototype", "local", "safety", "residual")
     }
     steps = 0
     for source_data in source_loader:
@@ -182,6 +183,8 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
         b_targets = b_targets[b_valid]
         b_adapted = base.flatten(b_outputs["transfer_visual"], b_lengths)[b_valid]
         bobsl_loss = weighted_nll(model.local_log_prob(b_adapted), b_targets, weights)
+        bobsl_context = base.flatten(b_outputs["log_prob"], b_lengths)[b_valid]
+        bobsl_context_loss = weighted_nll(bobsl_context, b_targets, weights)
         prototype_loss = weighted_nll(
             model.prototype_log_prob(b_adapted, args.prototype_temperature), b_targets, weights
         )
@@ -191,6 +194,7 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
         loss = (
             args.source_weight * source_loss
             + args.bobsl_weight * bobsl_loss
+            + args.bobsl_context_weight * bobsl_context_loss
             + args.prototype_weight * prototype_loss
             + args.local_source_weight * source_local
             + args.safety_weight * safety_loss
@@ -201,7 +205,8 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
             nn.utils.clip_grad_norm_(list(trainable_parameters(model)), args.max_grad_norm)
         optimizer.step()
         for key, value in {
-            "loss": loss, "source": source_loss, "bobsl": bobsl_loss, "prototype": prototype_loss,
+            "loss": loss, "source": source_loss, "bobsl": bobsl_loss,
+            "bobsl_context": bobsl_context_loss, "prototype": prototype_loss,
             "local": source_local, "safety": safety_loss, "residual": residual_loss,
         }.items():
             totals[key] += float(value.detach().item())
@@ -369,6 +374,7 @@ def parse_args():
     parser.add_argument("--projection", choices=["emotion", "full"], default="emotion")
     parser.add_argument("--source_weight", type=float, default=1.0)
     parser.add_argument("--bobsl_weight", type=float, default=1.0)
+    parser.add_argument("--bobsl_context_weight", type=float, default=0.0)
     parser.add_argument("--local_source_weight", type=float, default=0.1)
     parser.add_argument("--safety_weight", type=float, default=0.5)
     parser.add_argument("--safety_margin", type=float, default=0.0)
