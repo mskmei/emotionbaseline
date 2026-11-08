@@ -82,7 +82,8 @@ def pair(rows: Sequence[Mapping[str, object]]) -> List[Dict[str, object]]:
         if condition != "joint_b5k":
             continue
         joint = index[(corpus, profile, seed, condition)]
-        source = index.get((corpus, profile, seed, "source_only"))
+        source_profile = "transfer" if profile.startswith("residual-") else profile
+        source = index.get((corpus, source_profile, seed, "source_only"))
         if source is None:
             continue
         output.append(
