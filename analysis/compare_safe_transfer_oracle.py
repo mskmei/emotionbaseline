@@ -68,6 +68,9 @@ def group_result(main: Mapping[str, str], source: Mapping[str, str], external: M
         "delta_ejsl_vs_main": float(external["fused_weighted_f1_mean"]) - float(main["external_fused_wf1"]),
         "ejsl_source_expert_wf1": float(external["source_weighted_f1_mean"]),
         "oracle_ejsl_gain_vs_source": float(external["delta_fused_source_mean"]),
+        "oracle_best_epoch_mean": float(external["best_epoch_mean"]),
+        "oracle_source_fallback_rate": float(external["source_fallback_mean"]),
+        "oracle_boundary_best_rate": float(external["boundary_best_mean"]),
     }
     for label in LABELS:
         result[f"oracle_ejsl_{label}_f1"] = float(external[f"fused_{label}_f1_mean"])

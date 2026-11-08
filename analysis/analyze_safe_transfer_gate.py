@@ -124,6 +124,7 @@ def collect(inputs: Mapping[str, Path], profiles: set[str] | None):
                 corpus, profile, seed = run_identity(summary_path)
                 if profiles and profile not in profiles:
                     continue
+                metadata = json.loads(summary_path.read_text(encoding="utf-8"))
                 prediction_path = summary_path.with_name(prediction_name)
                 if not prediction_path.is_file():
                     continue
@@ -137,6 +138,11 @@ def collect(inputs: Mapping[str, Path], profiles: set[str] | None):
                     "split": split,
                     "n": len(gold),
                     "mean_gate": float(data["gate"].mean()),
+                    "best_epoch": int(metadata.get("best_epoch", 0)),
+                    "source_fallback": float(bool(metadata.get("source_fallback", False))),
+                    "boundary_best": float(
+                        int(metadata.get("best_epoch", 0)) >= int(metadata.get("args", {}).get("epochs", 0))
+                    ),
                 }
                 for branch in ("source", "joint", "fused"):
                     row.update(metric_row(gold, data[f"{branch}_pred"], branch))
@@ -225,6 +231,9 @@ def summarize(per_seed: Sequence[Mapping[str, object]]) -> List[Dict[str, object
         "expert_oracle_accuracy",
         "expert_oracle_macro_f1",
         "expert_oracle_weighted_f1",
+        "best_epoch",
+        "source_fallback",
+        "boundary_best",
     ] + [f"{branch}_{label}_f1" for branch in ("source", "joint", "fused", "expert_oracle") for label in LABELS]
     for key, rows in sorted(groups.items()):
         result: Dict[str, object] = dict(zip(("baseline", "corpus", "profile", "split"), key))
