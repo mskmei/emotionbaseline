@@ -103,6 +103,9 @@ def weighted_nll(log_prob, target, weights, reduction="mean"):
 
 def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, args):
     model.backbone.eval()
+    # cuDNN requires an RNN training reserve buffer to backpropagate into the
+    # input adapter. This GRU has one layer and therefore no recurrent dropout.
+    model.backbone.context_gru.train()
     model.transfer_adapter.train()
     model.transfer_head.train()
     bobsl_iterator = cycle(bobsl_loader)
