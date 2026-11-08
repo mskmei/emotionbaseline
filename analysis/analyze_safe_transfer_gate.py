@@ -143,6 +143,9 @@ def collect(inputs: Mapping[str, Path], profiles: set[str] | None):
                 source_correct = data["source_pred"] == gold
                 joint_correct = data["joint_pred"] == gold
                 fused_correct = data["fused_pred"] == gold
+                expert_oracle_pred = data["source_pred"].copy()
+                expert_oracle_pred[~source_correct & joint_correct] = data["joint_pred"][~source_correct & joint_correct]
+                row.update(metric_row(gold, expert_oracle_pred, "expert_oracle"))
                 disagreement = data["source_pred"] != data["joint_pred"]
                 row.update(
                     {
@@ -219,7 +222,10 @@ def summarize(per_seed: Sequence[Mapping[str, object]]) -> List[Dict[str, object
         "source_oracle_recovery_rate",
         "fused_recovery_rate",
         "fused_damage_rate",
-    ] + [f"{branch}_{label}_f1" for branch in ("source", "joint", "fused") for label in LABELS]
+        "expert_oracle_accuracy",
+        "expert_oracle_macro_f1",
+        "expert_oracle_weighted_f1",
+    ] + [f"{branch}_{label}_f1" for branch in ("source", "joint", "fused", "expert_oracle") for label in LABELS]
     for key, rows in sorted(groups.items()):
         result: Dict[str, object] = dict(zip(("baseline", "corpus", "profile", "split"), key))
         result["n_seeds"] = len(rows)
@@ -359,16 +365,17 @@ def write_report(path: Path, summary: Sequence[Mapping[str, object]]) -> None:
     lines = [
         "# SafeTransferGate Analysis",
         "",
-        "All means are paired over seeds. Model/profile selection uses source-domain weighted F1 only.",
+        "All means are paired over seeds. Check each run's gate_split.json for its checkpoint-selection protocol; external selection is oracle-only.",
         "",
-        "| Backbone | Corpus | Profile | Split | n | Source | Joint | Fused | Delta | 95% CI | Positive seeds | Sign p | Recovery | Damage |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Backbone | Corpus | Profile | Split | n | Source | Joint | Fused | Expert oracle | Delta | 95% CI | Positive seeds | Sign p | Recovery | Damage |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary:
         lines.append(
             f"| {row['baseline']} | {row['corpus']} | {row['profile']} | {row['split']} | {row['n_seeds']} | "
             f"{float(row['source_weighted_f1_mean']):.4f} | {float(row['joint_weighted_f1_mean']):.4f} | "
-            f"{float(row['fused_weighted_f1_mean']):.4f} | {float(row['delta_fused_source_mean']):+.4f} | "
+            f"{float(row['fused_weighted_f1_mean']):.4f} | {float(row['expert_oracle_weighted_f1_mean']):.4f} | "
+            f"{float(row['delta_fused_source_mean']):+.4f} | "
             f"[{float(row['delta_source_ci95_low']):+.4f}, {float(row['delta_source_ci95_high']):+.4f}] | "
             f"{row['delta_source_positive_seeds']}/{row['n_seeds']} | {float(row['delta_source_sign_p']):.4f} | "
             f"{float(row['fused_recovery_rate_mean']):.3f} | {float(row['fused_damage_rate_mean']):.3f} |"
