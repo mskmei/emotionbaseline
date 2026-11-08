@@ -39,6 +39,9 @@ profile_args() {
     rank3) PROFILE_ARGS=(--subspace_rank 3) ;;
     full) PROFILE_ARGS=(--subspace_rank 3 --projection full) ;;
     rank1_safe) PROFILE_ARGS=(--subspace_rank 1 --safety_weight 2.0 --residual_weight 0.005) ;;
+    rank1_b10) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --residual_scale 1.0 --bobsl_weight 0.10 --source_weight 2.0 --safety_weight 2.0 --residual_weight 0.005) ;;
+    rank1_b25) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0002 --residual_scale 1.0 --bobsl_weight 0.25 --source_weight 2.0 --safety_weight 2.0 --residual_weight 0.005) ;;
+    rank1_src4) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0002 --residual_scale 1.0 --bobsl_weight 0.25 --source_weight 4.0 --safety_weight 4.0 --residual_weight 0.01) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
 }
