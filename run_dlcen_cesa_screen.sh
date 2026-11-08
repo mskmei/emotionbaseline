@@ -10,7 +10,7 @@ PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
 PROFILES=${PROFILES:-"small balanced open strong_safety"}
 SEED=${SEED:-42}
-WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/dlcen_cesa/screen}
+WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/dlcen_cesa/screen_gated}
 
 corpus_paths() {
   case "$1" in
@@ -32,10 +32,10 @@ corpus_paths() {
 
 profile_args() {
   case "$1" in
-    small) PROFILE_ARGS=(--lr 0.0001 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.01) ;;
-    balanced) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001) ;;
-    open) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 0.5 --residual_weight 0.001) ;;
-    strong_safety) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 2.0 --residual_weight 0.001) ;;
+    small) PROFILE_ARGS=(--lr 0.0001 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.01 --gate_bias -4.0) ;;
+    balanced) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --gate_bias -3.0) ;;
+    open) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 0.5 --residual_weight 0.001 --gate_bias -3.0) ;;
+    strong_safety) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 2.0 --residual_weight 0.001 --gate_bias -4.0) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
 }

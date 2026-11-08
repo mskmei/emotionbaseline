@@ -29,6 +29,7 @@ class DLCENCESA(nn.Module):
     def __init__(self, backbone: nn.Module, visual_dim: int, basis: torch.Tensor, args):
         super().__init__()
         self.backbone = backbone
+        self.disable_transfer_gate = bool(args.disable_transfer_gate)
         self.transfer_adapter = ContextDecoupledEmotionSubspaceAdapter(
             visual_dim,
             basis,
@@ -44,6 +45,16 @@ class DLCENCESA(nn.Module):
             nn.Dropout(args.transfer_dropout),
             nn.Linear(args.transfer_hidden_dim, len(ANJS_LABELS)),
         )
+        gate_input_dim = len(ANJS_LABELS) * 2 + 4
+        self.transfer_gate = nn.Sequential(
+            nn.LayerNorm(gate_input_dim),
+            nn.Linear(gate_input_dim, args.gate_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(args.transfer_dropout),
+            nn.Linear(args.gate_hidden_dim, len(ANJS_LABELS)),
+        )
+        nn.init.zeros_(self.transfer_gate[-1].weight)
+        nn.init.constant_(self.transfer_gate[-1].bias, args.gate_bias)
 
     def forward(self, visual, speakers, mask, lengths, adapted: bool = True):
         if adapted:
@@ -53,6 +64,27 @@ class DLCENCESA(nn.Module):
         outputs = self.backbone(visual, speakers, mask, lengths)
         outputs["transfer_visual"] = visual
         outputs["transfer_delta"] = delta
+        if adapted and not self.disable_transfer_gate:
+            backbone_probability = outputs["log_prob"].exp()
+            local_log_prob = self.local_log_prob(visual)
+            local_probability = local_log_prob.exp()
+            backbone_entropy = -(backbone_probability * outputs["log_prob"]).sum(dim=-1, keepdim=True)
+            local_entropy = -(local_probability * local_log_prob).sum(dim=-1, keepdim=True)
+            disagreement = torch.abs(backbone_probability - local_probability).mean(dim=-1, keepdim=True)
+            delta_norm = delta.pow(2).mean(dim=-1, keepdim=True).sqrt()
+            gate_features = torch.cat(
+                [backbone_probability, local_probability, backbone_entropy, local_entropy, disagreement, delta_norm],
+                dim=-1,
+            )
+            transfer_gate = torch.sigmoid(self.transfer_gate(gate_features))
+            fused_probability = (1.0 - transfer_gate) * backbone_probability + transfer_gate * local_probability
+            fused_probability = fused_probability / fused_probability.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            outputs["backbone_log_prob"] = outputs["log_prob"]
+            outputs["log_prob"] = fused_probability.clamp_min(1e-8).log()
+            outputs["transfer_local_log_prob"] = local_log_prob
+            outputs["transfer_gate"] = transfer_gate
+        else:
+            outputs["transfer_gate"] = torch.zeros_like(outputs["log_prob"])
         return outputs
 
     def local_log_prob(self, visual):
@@ -62,6 +94,8 @@ class DLCENCESA(nn.Module):
 def trainable_parameters(model: DLCENCESA) -> Iterable[nn.Parameter]:
     yield from model.transfer_adapter.parameters()
     yield from model.transfer_head.parameters()
+    if not model.disable_transfer_gate:
+        yield from model.transfer_gate.parameters()
 
 
 def build_backbone(checkpoint: Dict, payload: Dict, source_keys, device: torch.device):
@@ -108,6 +142,7 @@ def train_epoch(model, source_loader, bobsl_loader, optimizer, weights, device, 
     model.backbone.context_gru.train()
     model.transfer_adapter.train()
     model.transfer_head.train()
+    model.transfer_gate.train()
     bobsl_iterator = cycle(bobsl_loader)
     totals = {key: 0.0 for key in ("loss", "source", "bobsl", "local", "safety", "residual")}
     steps = 0
@@ -173,7 +208,7 @@ def evaluate(model, loader, device, adapted: bool):
         valid = target.ge(0)
         target = target[valid]
         log_prob = base.flatten(outputs["log_prob"], lengths)[valid]
-        gate = base.flatten(outputs["gate"], lengths)[valid]
+        gate = base.flatten(outputs["transfer_gate"], lengths)[valid]
         prediction = log_prob.argmax(dim=-1)
         golds.extend(target.cpu().numpy().astype(int).tolist())
         preds.extend(prediction.cpu().numpy().astype(int).tolist())
@@ -313,6 +348,9 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-5)
     parser.add_argument("--transfer_dim", type=int, default=128)
     parser.add_argument("--transfer_hidden_dim", type=int, default=128)
+    parser.add_argument("--gate_hidden_dim", type=int, default=64)
+    parser.add_argument("--gate_bias", type=float, default=-3.0)
+    parser.add_argument("--disable_transfer_gate", action="store_true")
     parser.add_argument("--transfer_dropout", type=float, default=0.2)
     parser.add_argument("--transfer_scale", type=float, default=1.0)
     parser.add_argument("--subspace_rank", type=int, default=3)

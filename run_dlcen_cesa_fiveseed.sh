@@ -34,10 +34,10 @@ esac
 
 profile_args() {
   case "$PROFILE" in
-    small) PROFILE_ARGS=(--lr 0.0001 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.01) ;;
-    balanced) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001) ;;
-    open) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 0.5 --residual_weight 0.001) ;;
-    strong_safety) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 2.0 --residual_weight 0.001) ;;
+    small) PROFILE_ARGS=(--lr 0.0001 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.01 --gate_bias -4.0) ;;
+    balanced) PROFILE_ARGS=(--lr 0.0003 --transfer_scale 1.0 --safety_weight 1.0 --residual_weight 0.001 --gate_bias -3.0) ;;
+    open) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 0.5 --residual_weight 0.001 --gate_bias -3.0) ;;
+    strong_safety) PROFILE_ARGS=(--lr 0.0005 --transfer_scale 2.0 --safety_weight 2.0 --residual_weight 0.001 --gate_bias -4.0) ;;
     *) echo "Unknown PROFILE=$PROFILE" >&2; exit 2 ;;
   esac
 }
