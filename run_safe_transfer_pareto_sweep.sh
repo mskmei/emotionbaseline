@@ -83,16 +83,16 @@ lookup_floor() {
   ' "$THRESHOLD_CSV"
 }
 
-for corpus in $CORPORA; do
-  for seed in $SEEDS; do
-    cache_dir="$CACHE_ROOT/$corpus/seed${seed}"
-    source_floor=$(lookup_floor "$corpus" "$seed")
-    if [[ -z "$source_floor" ]]; then
-      echo "[pareto-sweep] missing threshold baseline=$BASELINE corpus=$corpus seed=$seed" >&2
-      exit 2
-    fi
-    for config in $CONFIGS; do
-      resolve_config "$config"
+for config in $CONFIGS; do
+  resolve_config "$config"
+  for corpus in $CORPORA; do
+    for seed in $SEEDS; do
+      cache_dir="$CACHE_ROOT/$corpus/seed${seed}"
+      source_floor=$(lookup_floor "$corpus" "$seed")
+      if [[ -z "$source_floor" ]]; then
+        echo "[pareto-sweep] missing threshold baseline=$BASELINE corpus=$corpus seed=$seed" >&2
+        exit 2
+      fi
       out_dir="$OUT_ROOT/$corpus/${config}_seed${seed}"
       if [[ -s "$out_dir/external_test_best_summary.json" ]]; then
         echo "[pareto-sweep] skip $out_dir"
