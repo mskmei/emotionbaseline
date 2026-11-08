@@ -8,7 +8,7 @@ GPU=${GPU:-0}
 export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
-PROFILES=${PROFILES:-"source_only joint_low joint_mid joint_high joint_wide"}
+PROFILES=${PROFILES:-"source_only joint_tiny joint_010 joint_015 joint_low joint_mid joint_high joint_wide"}
 SEED=${SEED:-42}
 EPOCHS=${EPOCHS:-50}
 RESUME_DONE=${RESUME_DONE:-1}
@@ -39,6 +39,18 @@ profile_args() {
     joint_low)
       TRAIN_PKL=$JOINT_PKL
       PROFILE_ARGS=(--bobsl_weight 0.25)
+      ;;
+    joint_tiny)
+      TRAIN_PKL=$JOINT_PKL
+      PROFILE_ARGS=(--bobsl_weight 0.05)
+      ;;
+    joint_010)
+      TRAIN_PKL=$JOINT_PKL
+      PROFILE_ARGS=(--bobsl_weight 0.1)
+      ;;
+    joint_015)
+      TRAIN_PKL=$JOINT_PKL
+      PROFILE_ARGS=(--bobsl_weight 0.15)
       ;;
     joint_mid)
       TRAIN_PKL=$JOINT_PKL
@@ -95,4 +107,3 @@ for corpus in $CORPORA; do
 done
 
 "$PYTHON_BIN" analysis/summarize_decoupled_context.py --root "$WORK_ROOT"
-
