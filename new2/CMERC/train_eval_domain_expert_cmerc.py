@@ -30,6 +30,7 @@ from train_eval_domain_routed_cmerc import (
     make_train_loader,
     metrics_from_arrays,
     namespace_from_checkpoint,
+    prototype_alignment,
     resolve_path,
     seed_everything,
     sequence_lengths,
@@ -246,6 +247,7 @@ def run_epoch(
             bobsl_fused_loss = class_balanced_loss(bobsl_fused, labels_flat[bobsl])
             source_expert_loss = class_balanced_loss(outputs["source_logits"][source], labels_flat[source])
             bobsl_expert_loss = class_balanced_loss(outputs["bobsl_logits"][bobsl], labels_flat[bobsl])
+            cross_source_loss = class_balanced_loss(outputs["bobsl_logits"][source], labels_flat[source])
             if torch.any(source):
                 consistency = F.kl_div(
                     source_fused,
@@ -257,12 +259,19 @@ def run_epoch(
                 consistency = outputs["gate"].sum() * 0.0
                 context_gate_penalty = outputs["gate"].sum() * 0.0
             alignment_loss = expert_alignment(model) if model.has_bobsl else outputs["gate"].sum() * 0.0
+            embedding_alignment_loss = (
+                prototype_alignment(outputs["bobsl_embedding"], labels_flat, bobsl)
+                if model.has_bobsl
+                else outputs["gate"].sum() * 0.0
+            )
             loss = (
                 source_fused_loss
                 + args.bobsl_fused_weight * bobsl_fused_loss
                 + args.local_source_weight * source_expert_loss
                 + args.bobsl_weight * bobsl_expert_loss
+                + args.cross_source_weight * cross_source_loss
                 + args.alignment_weight * alignment_loss
+                + args.embedding_alignment_weight * embedding_alignment_loss
                 + args.distill_weight * consistency
                 + args.gate_penalty * context_gate_penalty
             )
@@ -539,7 +548,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local_source_weight", type=float, default=0.5)
     parser.add_argument("--bobsl_weight", type=float, default=0.5)
     parser.add_argument("--bobsl_fused_weight", type=float, default=0.25)
+    parser.add_argument("--cross_source_weight", type=float, default=0.0)
     parser.add_argument("--alignment_weight", type=float, default=0.05)
+    parser.add_argument("--embedding_alignment_weight", type=float, default=0.0)
     parser.add_argument("--distill_weight", type=float, default=0.3)
     parser.add_argument("--gate_penalty", type=float, default=0.02)
     parser.add_argument("--source_repeat", type=int, default=2)
