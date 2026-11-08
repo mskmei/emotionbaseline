@@ -90,6 +90,11 @@ def expected_calibration_error(gold: np.ndarray, probs: np.ndarray, bins: int = 
 
 
 def probability_metrics(gold: np.ndarray, probs: np.ndarray) -> Dict[str, float]:
+    finite = np.all(np.isfinite(probs), axis=1)
+    gold = gold[finite]
+    probs = probs[finite]
+    if not len(gold):
+        return {metric: float("nan") for metric in ("nll", "brier", "entropy", "confidence", "gold_probability", "ece")}
     one_hot = np.eye(len(LABELS), dtype=np.float64)[gold]
     gold_prob = probs[np.arange(len(gold)), gold]
     return {
@@ -205,17 +210,20 @@ def paired_rows() -> Tuple[List[Dict[str, object]], List[Dict[str, object]], Lis
                         row[f"delta_{metric}"] = joint_prob[metric] - base_prob[metric]
                     row.update(
                         {
+                            "base_invalid_probability_rate": float(np.mean(~np.all(np.isfinite(base_probs), axis=1))),
+                            "joint_invalid_probability_rate": float(np.mean(~np.all(np.isfinite(joint_probs), axis=1))),
                             "disagreement_rate": float(np.mean(base_pred != joint_pred)),
                             "fixed_rate": float(np.mean(~base_correct & joint_correct)),
                             "broken_rate": float(np.mean(base_correct & ~joint_correct)),
                             "net_correct_rate": float(np.mean(joint_correct) - np.mean(base_correct)),
-                            "mean_output_js": float(np.mean(js_divergence(base_probs, joint_probs))),
+                            "mean_output_js": float(np.nanmean(js_divergence(base_probs, joint_probs))),
                         }
                     )
                     overall_rows.append(row)
 
                     for class_id, label in enumerate(LABELS):
                         keep = gold == class_id
+                        finite_pair = keep & np.isfinite(base_probs[:, class_id]) & np.isfinite(joint_probs[:, class_id])
                         class_rows.append(
                             {
                                 **common,
@@ -231,9 +239,11 @@ def paired_rows() -> Tuple[List[Dict[str, object]], List[Dict[str, object]], Lis
                                 "joint_pred_prior": float(np.mean(joint_pred == class_id)),
                                 "delta_pred_prior": float(np.mean(joint_pred == class_id) - np.mean(base_pred == class_id)),
                                 "gold_prior": float(np.mean(keep)),
-                                "base_gold_probability": float(np.mean(base_probs[keep, class_id])),
-                                "joint_gold_probability": float(np.mean(joint_probs[keep, class_id])),
-                                "delta_gold_probability": float(np.mean(joint_probs[keep, class_id] - base_probs[keep, class_id])),
+                                "base_gold_probability": float(np.mean(base_probs[finite_pair, class_id])),
+                                "joint_gold_probability": float(np.mean(joint_probs[finite_pair, class_id])),
+                                "delta_gold_probability": float(
+                                    np.mean(joint_probs[finite_pair, class_id] - base_probs[finite_pair, class_id])
+                                ),
                                 "fixed_rate": float(np.mean((~base_correct & joint_correct)[keep])),
                                 "broken_rate": float(np.mean((base_correct & ~joint_correct)[keep])),
                             }
@@ -283,14 +293,15 @@ def report(overall: Sequence[Mapping[str, object]], classes: Sequence[Mapping[st
         "",
         "All values are paired joint_b5k minus source-only means over five seeds.",
         "",
-        "| corpus | baseline | split | delta wF1 | delta macro F1 | delta NLL | delta ECE | fixed | broken | disagreement | output JS |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| corpus | baseline | split | delta wF1 | delta macro F1 | delta NLL | delta ECE | invalid joint | fixed | broken | disagreement | output JS |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in overall:
         lines.append(
             f"| {row['corpus']} | {row['baseline']} | {row['split']} | {fmt(row['delta_weighted_f1_mean'])} | "
             f"{fmt(row['delta_macro_f1_mean'])} | {fmt(row['delta_nll_mean'])} | {fmt(row['delta_ece_mean'])} | "
-            f"{float(row['fixed_rate_mean']):.4f} | {float(row['broken_rate_mean']):.4f} | "
+            f"{float(row['joint_invalid_probability_rate_mean']):.4f} | {float(row['fixed_rate_mean']):.4f} | "
+            f"{float(row['broken_rate_mean']):.4f} | "
             f"{float(row['disagreement_rate_mean']):.4f} | {float(row['mean_output_js_mean']):.4f} |"
         )
     lines.extend(
@@ -335,6 +346,8 @@ def main() -> None:
         "delta_confidence",
         "delta_gold_probability",
         "delta_ece",
+        "base_invalid_probability_rate",
+        "joint_invalid_probability_rate",
         "disagreement_rate",
         "fixed_rate",
         "broken_rate",
