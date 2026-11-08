@@ -68,6 +68,8 @@ def build_magtkd(args, device: torch.device) -> None:
     def make_model(checkpoint):
         model_args = SimpleNamespace(**checkpoint["args"])
         model_args.clsNum = 4
+        model_args.modality = getattr(model_args, "modality", checkpoint.get("modality", "video"))
+        model_args.output_head = getattr(model_args, "output_head", "video")
         model = module.Transformer_Based_Model(model_args).to(device)
         model.load_state_dict(checkpoint["model_state_dict"], strict=True)
         model.eval()
