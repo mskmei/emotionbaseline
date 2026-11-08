@@ -47,13 +47,12 @@ class MultiExpertGate(nn.Module):
         with torch.no_grad():
             self.network[-1].bias.copy_(torch.tensor(list(biases), dtype=torch.float32))
 
-    def forward(
-        self,
+    @staticmethod
+    def reliability_features(
         context_log_prob: torch.Tensor,
         source_log_prob: torch.Tensor,
         bobsl_log_prob: torch.Tensor,
         utterance_lengths: torch.Tensor,
-        has_bobsl: bool,
     ) -> torch.Tensor:
         log_probs = [value.detach() for value in (context_log_prob, source_log_prob, bobsl_log_prob)]
         probs = [value.exp() for value in log_probs]
@@ -66,12 +65,46 @@ class MultiExpertGate(nn.Module):
             0.5 * torch.abs(probs[1] - probs[2]).sum(dim=-1, keepdim=True),
         ]
         length_feature = torch.log1p(utterance_lengths.float()).unsqueeze(1) / math.log(51.0)
-        features = torch.cat([*entropies, *confidences, *disagreements, length_feature], dim=1)
+        return torch.cat([*entropies, *confidences, *disagreements, length_feature], dim=1)
+
+    def forward(
+        self,
+        context_log_prob: torch.Tensor,
+        source_log_prob: torch.Tensor,
+        bobsl_log_prob: torch.Tensor,
+        utterance_lengths: torch.Tensor,
+        has_bobsl: bool,
+    ) -> torch.Tensor:
+        features = self.reliability_features(
+            context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths
+        )
         logits = self.network(features)
         if not has_bobsl:
             logits = logits.clone()
             logits[:, 2] = -1e4
         return torch.softmax(logits, dim=-1)
+
+
+class ResidualBOBSLGate(nn.Module):
+    """Adds BOBSL evidence without changing the source-trained context/local ratio."""
+
+    def __init__(self, hidden_dim: int, bias: float):
+        super().__init__()
+        self.network = nn.Sequential(nn.Linear(10, hidden_dim), nn.GELU(), nn.Linear(hidden_dim, 1))
+        nn.init.zeros_(self.network[-1].weight)
+        nn.init.constant_(self.network[-1].bias, bias)
+
+    def forward(
+        self,
+        context_log_prob: torch.Tensor,
+        source_log_prob: torch.Tensor,
+        bobsl_log_prob: torch.Tensor,
+        utterance_lengths: torch.Tensor,
+    ) -> torch.Tensor:
+        features = MultiExpertGate.reliability_features(
+            context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths
+        )
+        return torch.sigmoid(self.network(features))
 
 
 class DomainExpertCMERC(nn.Module):
@@ -82,6 +115,8 @@ class DomainExpertCMERC(nn.Module):
         self.source_expert = CosineLocalExpert(*expert_args)
         self.bobsl_expert = CosineLocalExpert(*expert_args)
         self.gate = MultiExpertGate(args.gate_hidden_dim, args.gate_biases)
+        self.bobsl_gate = ResidualBOBSLGate(args.gate_hidden_dim, args.residual_gate_bias)
+        self.residual_bobsl_gate = bool(args.residual_bobsl_gate)
         self.has_bobsl = bool(has_bobsl)
         for parameter in self.context_model.parameters():
             parameter.requires_grad = False
@@ -112,7 +147,21 @@ class DomainExpertCMERC(nn.Module):
         utterance_lengths = torch.cat(
             [torch.full((length,), length, dtype=torch.float32, device=visuf.device) for length in lengths]
         )
-        gate = self.gate(context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths, self.has_bobsl)
+        if self.residual_bobsl_gate:
+            base_gate = self.gate(
+                context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths, False
+            )
+            if self.has_bobsl:
+                bobsl_weight = self.bobsl_gate(
+                    context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths
+                )
+            else:
+                bobsl_weight = torch.zeros_like(base_gate[:, :1])
+            gate = torch.cat([base_gate[:, :2] * (1.0 - bobsl_weight), bobsl_weight], dim=1)
+        else:
+            gate = self.gate(
+                context_log_prob, source_log_prob, bobsl_log_prob, utterance_lengths, self.has_bobsl
+            )
         probabilities = torch.stack(
             [context_log_prob.exp(), source_log_prob.exp(), bobsl_log_prob.exp()], dim=1
         )
@@ -367,6 +416,9 @@ def train(args: argparse.Namespace) -> None:
     if args.freeze_source_expert:
         for parameter in model.source_expert.parameters():
             parameter.requires_grad = False
+    if args.freeze_base_gate:
+        for parameter in model.gate.parameters():
+            parameter.requires_grad = False
     train_loader = make_train_loader(args, train_dataset)
     source_loader = make_eval_loader(args, CMERCVisualDataset(source_pkl, "test"))
     external_loader = make_eval_loader(args, CMERCVisualDataset(external_pkl, "test"))
@@ -459,6 +511,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context_checkpoint", required=True)
     parser.add_argument("--init_source_expert_checkpoint", default="")
     parser.add_argument("--freeze_source_expert", action="store_true")
+    parser.add_argument("--freeze_base_gate", action="store_true")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=35)
     parser.add_argument("--epochs", type=int, default=15)
@@ -473,6 +526,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cosine_scale", type=float, default=10.0)
     parser.add_argument("--gate_hidden_dim", type=int, default=32)
     parser.add_argument("--gate_biases", type=float, nargs=3, default=[2.0, 0.0, -1.0])
+    parser.add_argument("--residual_bobsl_gate", action="store_true")
+    parser.add_argument("--residual_gate_bias", type=float, default=-3.0)
     parser.add_argument("--local_source_weight", type=float, default=0.5)
     parser.add_argument("--bobsl_weight", type=float, default=0.5)
     parser.add_argument("--bobsl_fused_weight", type=float, default=0.25)

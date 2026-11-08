@@ -55,6 +55,15 @@ resolve_profile() {
     transfer)
       PROFILE_ARGS=(--gate_biases 1.5 0 -0.5 --distill_weight 0.2 --gate_penalty 0.01 --bobsl_weight 0.75 --bobsl_fused_weight 0.5 --alignment_weight 0.1)
       ;;
+    residual-tight)
+      PROFILE_ARGS=(--gate_biases 1.5 0 -0.5 --residual_bobsl_gate --residual_gate_bias -3.5 --distill_weight 0.2 --gate_penalty 0.02 --bobsl_weight 0.75 --bobsl_fused_weight 0.5 --alignment_weight 0.1)
+      ;;
+    residual-mid)
+      PROFILE_ARGS=(--gate_biases 1.5 0 -0.5 --residual_bobsl_gate --residual_gate_bias -3.0 --distill_weight 0.2 --gate_penalty 0.01 --bobsl_weight 0.75 --bobsl_fused_weight 0.5 --alignment_weight 0.1)
+      ;;
+    residual-open)
+      PROFILE_ARGS=(--gate_biases 1.5 0 -0.5 --residual_bobsl_gate --residual_gate_bias -2.5 --distill_weight 0.1 --gate_penalty 0.005 --bobsl_weight 0.75 --bobsl_fused_weight 0.5 --alignment_weight 0.1)
+      ;;
     *) echo "[DE-CMERC] unknown profile=$1" >&2; return 2 ;;
   esac
 }
@@ -73,9 +82,12 @@ for corpus in $CORPORA; do
         if [[ "$condition" == source_only ]]; then TRAIN_PKL="$SOURCE_PKL"; else TRAIN_PKL="$JOINT_PKL"; fi
         INIT_ARGS=()
         if [[ "$condition" == joint_b5k && "$WARMSTART_SOURCE_ONLY" == 1 ]]; then
-          source_init="$SOURCE_INIT_ROOT/$corpus/source_only/${profile}_seed${seed}/model_best.pt"
+          source_profile="$profile"
+          if [[ "$profile" == residual-* ]]; then source_profile=transfer; fi
+          source_init="$SOURCE_INIT_ROOT/$corpus/source_only/${source_profile}_seed${seed}/model_best.pt"
           if [[ ! -s "$source_init" ]]; then echo "[DE-CMERC] missing source init: $source_init" >&2; exit 1; fi
           INIT_ARGS=(--init_source_expert_checkpoint "$source_init" --freeze_source_expert)
+          if [[ "$profile" == residual-* ]]; then INIT_ARGS+=(--freeze_base_gate); fi
         fi
         out_dir="$OUT_ROOT/$corpus/$condition/${profile}_seed${seed}"
         done_path="$out_dir/external_test_best_summary.json"
