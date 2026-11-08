@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import random
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence, Tuple
 
@@ -43,6 +44,7 @@ def load_split(anchor_root: Path, source_root: Path, corpus: str, seed: int, spl
             axis=-1,
         ),
         anchor["labels"].astype(np.int64),
+        anchor["ids"].astype(str),
     )
 
 
@@ -66,10 +68,31 @@ def weighted_f1_many(labels: np.ndarray, predictions: np.ndarray) -> np.ndarray:
 
 def evaluate_many(weights: np.ndarray, payloads: Sequence[Tuple[np.ndarray, np.ndarray]]) -> np.ndarray:
     seed_scores = []
-    for probabilities, labels in payloads:
+    for probabilities, labels, *_ in payloads:
         mixed = np.einsum("nce,kce->knc", probabilities, weights, optimize=True)
         seed_scores.append(weighted_f1_many(labels, mixed.argmax(axis=2)))
     return np.mean(seed_scores, axis=0)
+
+
+def dialogue_id(item_id: str) -> str:
+    return str(item_id).rsplit(":utt", 1)[0]
+
+
+def split_external_payloads(payloads, valid_ratio: float, split_seed: int):
+    if valid_ratio <= 0:
+        return payloads, None, []
+    dialogues = sorted({dialogue_id(item_id) for item_id in payloads[0][2]})
+    generator = random.Random(split_seed)
+    generator.shuffle(dialogues)
+    n_valid = max(1, min(len(dialogues) - 1, int(round(len(dialogues) * valid_ratio))))
+    valid_dialogues = set(dialogues[:n_valid])
+    valid_payloads = []
+    test_payloads = []
+    for probabilities, labels, ids in payloads:
+        valid_mask = np.asarray([dialogue_id(item_id) in valid_dialogues for item_id in ids])
+        valid_payloads.append((probabilities[valid_mask], labels[valid_mask], ids[valid_mask]))
+        test_payloads.append((probabilities[~valid_mask], labels[~valid_mask], ids[~valid_mask]))
+    return valid_payloads, test_payloads, sorted(valid_dialogues)
 
 
 def convex_options(step: float) -> np.ndarray:
@@ -146,9 +169,14 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
         "source_delta",
         "external_wf1",
         "external_delta",
+        "heldout_external_wf1",
+        "heldout_external_delta",
         "strict_pareto",
+        "heldout_strict_pareto",
         "tolerance",
         "class_order",
+        "external_valid_ratio",
+        "external_valid_dialogues",
         "weights_json",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -165,6 +193,8 @@ def main() -> None:
     parser.add_argument("--step", type=float, default=0.1)
     parser.add_argument("--cycles", type=int, default=4)
     parser.add_argument("--tolerances", default="0,0.002,0.005,0.01")
+    parser.add_argument("--external_valid_ratio", type=float, default=0.0)
+    parser.add_argument("--split_seed", type=int, default=2026)
     args = parser.parse_args()
 
     inputs = parse_inputs(args.input)
@@ -189,12 +219,25 @@ def main() -> None:
                 split: [load_split(anchor_root, source_root, corpus, seed, split) for seed in SEEDS]
                 for split in ("source_test", "external_test")
             }
+            external_select, external_heldout, valid_dialogues = split_external_payloads(
+                payloads["external_test"], args.external_valid_ratio, args.split_seed
+            )
             old = main[(baseline, corpus)]
             old_source = float(old["source_fused_wf1"])
-            old_external = float(old["external_fused_wf1"])
+            anchor_weights = np.tile(np.asarray((1.0, 0.0, 0.0)), (1, 4, 1))
+            old_external = (
+                float(evaluate_many(anchor_weights, external_select)[0])
+                if external_heldout is not None
+                else float(old["external_fused_wf1"])
+            )
+            old_heldout = (
+                float(evaluate_many(anchor_weights, external_heldout)[0])
+                if external_heldout is not None
+                else old_external
+            )
             global_weights = np.repeat(options[:, None, :], 4, axis=1)
             global_source, global_external = score_candidates(
-                global_weights, payloads["source_test"], payloads["external_test"]
+                global_weights, payloads["source_test"], external_select
             )
             starts = [np.tile(np.asarray((1.0, 0.0, 0.0)), (4, 1))]
             for tolerance in tolerances:
@@ -211,7 +254,7 @@ def main() -> None:
                         order,
                         options,
                         payloads["source_test"],
-                        payloads["external_test"],
+                        external_select,
                         old_source,
                         old_external,
                         tolerance,
@@ -231,6 +274,12 @@ def main() -> None:
                 best_meta = (0.0, tuple(range(4)))
             source_delta = float(best["source_wf1"]) - old_source
             external_delta = float(best["external_wf1"]) - old_external
+            heldout_external = (
+                float(evaluate_many(np.asarray(best["weights"])[None, :, :], external_heldout)[0])
+                if external_heldout is not None
+                else float(best["external_wf1"])
+            )
+            heldout_delta = heldout_external - old_heldout
             row = {
                 "baseline": baseline,
                 "corpus": corpus,
@@ -238,22 +287,37 @@ def main() -> None:
                 "source_delta": source_delta,
                 "external_wf1": best["external_wf1"],
                 "external_delta": external_delta,
+                "heldout_external_wf1": heldout_external,
+                "heldout_external_delta": heldout_delta,
                 "strict_pareto": source_delta > 1e-6 and external_delta > 1e-6,
+                "heldout_strict_pareto": source_delta > 1e-6 and heldout_delta > 1e-6,
                 "tolerance": best_meta[0],
                 "class_order": "-".join(str(value) for value in best_meta[1]),
+                "external_valid_ratio": args.external_valid_ratio,
+                "external_valid_dialogues": len(valid_dialogues),
                 "weights_json": json.dumps(np.asarray(best["weights"]).tolist()),
             }
             rows.append(row)
             print(
                 f"[classwise-grid] {baseline}/{corpus} source={source_delta:+.4f} "
-                f"eJSL={external_delta:+.4f} pass={row['strict_pareto']}"
+                f"eJSL-valid={external_delta:+.4f} heldout={heldout_delta:+.4f} "
+                f"pass={row['heldout_strict_pareto']}"
             )
-    rows.sort(key=lambda row: (bool(row["strict_pareto"]), float(row["external_delta"])), reverse=True)
+    rows.sort(
+        key=lambda row: (
+            bool(row["heldout_strict_pareto"]),
+            float(row["heldout_external_delta"]),
+        ),
+        reverse=True,
+    )
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
     write_csv(out_dir / "best_classwise_mixture.csv", rows)
     (out_dir / "best_classwise_mixture.json").write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
-    print(f"[classwise-grid] strict_pareto={sum(bool(row['strict_pareto']) for row in rows)}/{len(rows)}")
+    print(
+        f"[classwise-grid] heldout_strict_pareto="
+        f"{sum(bool(row['heldout_strict_pareto']) for row in rows)}/{len(rows)}"
+    )
 
 
 if __name__ == "__main__":
