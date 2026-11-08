@@ -11,18 +11,19 @@ CORPORA=${CORPORA:-"MELD IEMOCAP"}
 PROFILES=${PROFILES:-"rank1 rank3 full"}
 SEED=${SEED:-42}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/conxgnn_sast/screen}
+EPOCHS_OVERRIDE=${EPOCHS:-}
 
 set_paths() {
   case "$1" in
     MELD)
-      EPOCHS=${EPOCHS:-10}
+      EPOCHS=${EPOCHS_OVERRIDE:-10}
       TRAIN_PKL=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_meld_ejsl/visual_joint_bobsl_meld/joint_pkls/joint_b5k.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_meld_ejsl/features/ejsl_conxgnn_visual_anjs4_translated.pkl
       BASE_ROOT=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_meld_ejsl/visual_joint_bobsl_meld
       BASE_PREFIX=meld_only
       ;;
     IEMOCAP)
-      EPOCHS=${EPOCHS:-20}
+      EPOCHS=${EPOCHS_OVERRIDE:-20}
       TRAIN_PKL=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap/joint_pkls/iemocap_bobsl5000_trainonly_sample123.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_meld_ejsl/features/ejsl_conxgnn_visual_anjs4_translated.pkl
       BASE_ROOT=/raid_zoe/home/lr/maokeyu/sign/conxgnn_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap
@@ -44,7 +45,6 @@ profile_args() {
 
 mkdir -p "$WORK_ROOT/logs"
 for corpus in $CORPORA; do
-  unset EPOCHS
   set_paths "$corpus"
   for profile in $PROFILES; do
     profile_args "$profile"
