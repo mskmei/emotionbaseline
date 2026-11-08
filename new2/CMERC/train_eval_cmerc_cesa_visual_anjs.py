@@ -189,7 +189,9 @@ def train_adapter_epoch(
     model.adapter.train()
     model.local_head.train()
     bobsl_iter = cycle(bobsl_loader)
-    totals: Dict[str, float] = {key: 0.0 for key in ("loss", "source", "bobsl", "local", "safety", "residual")}
+    totals: Dict[str, float] = {
+        key: 0.0 for key in ("loss", "source", "bobsl", "bobsl_context", "local", "safety", "residual")
+    }
     steps = 0
     for source_data in source_loader:
         bobsl_data = next(bobsl_iter)
@@ -210,17 +212,43 @@ def train_adapter_epoch(
         source_delta_flat = flatten_seq_first(source_delta, lengths)[source_valid]
         residual_loss = source_delta_flat.pow(2).sum(dim=-1).mean()
 
-        _, bobsl_visual, _, _, _, _, bobsl_lengths, bobsl_labels, bobsl_valid = prepare_batch(bobsl_data, device)
+        (
+            bobsl_texts,
+            bobsl_visual,
+            bobsl_audio,
+            bobsl_qmask,
+            bobsl_umask,
+            _,
+            bobsl_lengths,
+            bobsl_labels,
+            bobsl_valid,
+        ) = prepare_batch(bobsl_data, device)
         bobsl_adapted, bobsl_delta = model.adapt(bobsl_visual)
         bobsl_flat = flatten_seq_first(bobsl_adapted, bobsl_lengths)[bobsl_valid]
         bobsl_targets = bobsl_labels[bobsl_valid]
         bobsl_loss = weighted_nll(model.local_log_prob(bobsl_flat), bobsl_targets, weights)
+        if args.bobsl_context_weight > 0:
+            bobsl_context_log_prob = model.context_forward(
+                bobsl_texts,
+                bobsl_qmask,
+                bobsl_umask,
+                bobsl_lengths,
+                bobsl_audio,
+                bobsl_adapted,
+                epoch,
+            )
+            bobsl_context_loss = weighted_nll(
+                bobsl_context_log_prob[bobsl_valid], bobsl_targets, weights
+            )
+        else:
+            bobsl_context_loss = bobsl_loss.new_zeros(())
         bobsl_delta_flat = flatten_seq_first(bobsl_delta, bobsl_lengths)[bobsl_valid]
         residual_loss = residual_loss + bobsl_delta_flat.pow(2).sum(dim=-1).mean()
 
         loss = (
             args.source_weight * source_loss
             + args.bobsl_weight * bobsl_loss
+            + args.bobsl_context_weight * bobsl_context_loss
             + args.local_source_weight * source_local
             + args.safety_weight * safety_loss
             + args.residual_weight * residual_loss
@@ -234,6 +262,7 @@ def train_adapter_epoch(
             "loss": loss,
             "source": source_loss,
             "bobsl": bobsl_loss,
+            "bobsl_context": bobsl_context_loss,
             "local": source_local,
             "safety": safety_loss,
             "residual": residual_loss,
@@ -439,6 +468,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--projection", choices=["emotion", "full"], default="emotion")
     parser.add_argument("--source_weight", type=float, default=1.0)
     parser.add_argument("--bobsl_weight", type=float, default=1.0)
+    parser.add_argument(
+        "--bobsl_context_weight",
+        type=float,
+        default=0.0,
+        help="Naive-joint ablation: pass length-one BOBSL samples through the frozen context model.",
+    )
     parser.add_argument("--local_source_weight", type=float, default=0.25)
     parser.add_argument("--safety_weight", type=float, default=1.0)
     parser.add_argument("--safety_margin", type=float, default=0.0)
