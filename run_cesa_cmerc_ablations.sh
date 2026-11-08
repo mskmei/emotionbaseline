@@ -36,6 +36,9 @@ profile_args() {
     fullspace) PROFILE_ARGS=(--projection full) ;;
     no_safety) PROFILE_ARGS=(--safety_weight 0.0) ;;
     context_joint) PROFILE_ARGS=(--bobsl_weight 0.0 --bobsl_context_weight 1.0) ;;
+    context_full) PROFILE_ARGS=(--projection full --bobsl_weight 0.0 --bobsl_context_weight 1.0) ;;
+    context_rank1) PROFILE_ARGS=(--subspace_rank 1 --bobsl_weight 0.0 --bobsl_context_weight 1.0) ;;
+    context_no_safety) PROFILE_ARGS=(--bobsl_weight 0.0 --bobsl_context_weight 1.0 --safety_weight 0.0) ;;
     rank1) PROFILE_ARGS=(--subspace_rank 1) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
