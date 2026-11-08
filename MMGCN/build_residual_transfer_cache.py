@@ -39,6 +39,7 @@ def loader(path: Path, train: bool, batch_size: int) -> DataLoader:
 @torch.no_grad()
 def collect(model, joint_model, dataloader: DataLoader, device: torch.device) -> Dict[str, np.ndarray]:
     model.eval()
+    joint_model.eval()
     base_log_probs: List[np.ndarray] = []
     joint_log_probs: List[np.ndarray] = []
     visuals: List[np.ndarray] = []
