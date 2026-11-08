@@ -88,6 +88,37 @@ def select(rows: Sequence[Mapping[str, str]]) -> List[Dict[str, object]]:
     return selected
 
 
+def summarize_ablations(rows: Sequence[Mapping[str, str]]) -> List[Dict[str, object]]:
+    groups: Dict[str, List[Tuple[Mapping[str, str], Mapping[str, str]]]] = defaultdict(list)
+    for source in rows:
+        if source["split"] != "source":
+            continue
+        external = next(
+            row
+            for row in rows
+            if row["baseline"] == source["baseline"]
+            and row["corpus"] == source["corpus"]
+            and row["profile"] == source["profile"]
+            and row["split"] == "external"
+        )
+        groups[source["profile"]].append((source, external))
+    output: List[Dict[str, object]] = []
+    for profile, pairs in sorted(groups.items()):
+        output.append(
+            {
+                "profile": profile,
+                "n_backbone_corpora": len(pairs),
+                "mean_source_gain": float(np.mean([float(source["delta_fused_source_mean"]) for source, _ in pairs])),
+                "mean_external_gain": float(np.mean([float(external["delta_fused_source_mean"]) for _, external in pairs])),
+                "source_positive_cases": sum(float(source["delta_fused_source_mean"]) > 1e-12 for source, _ in pairs),
+                "external_positive_cases": sum(float(external["delta_fused_source_mean"]) > 1e-12 for _, external in pairs),
+                "mean_recovery_rate": float(np.mean([float(source["fused_recovery_rate_mean"]) for source, _ in pairs])),
+                "mean_damage_rate": float(np.mean([float(source["fused_damage_rate_mean"]) for source, _ in pairs])),
+            }
+        )
+    return output
+
+
 def save_figure(fig: plt.Figure, out_dir: Path, name: str) -> None:
     fig.tight_layout()
     fig.savefig(out_dir / f"{name}.png", dpi=240, bbox_inches="tight")
@@ -146,7 +177,28 @@ def plot_class_gains(rows: Sequence[Mapping[str, object]], out_dir: Path) -> Non
     save_figure(fig, out_dir, "source_class_f1_gains")
 
 
-def write_report(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
+def plot_ablations(rows: Sequence[Mapping[str, object]], out_dir: Path) -> None:
+    x = np.arange(len(rows))
+    fig, ax = plt.subplots(figsize=(7.5, 4.5))
+    ax.bar(x - 0.18, [row["mean_source_gain"] for row in rows], 0.36, label="Source", color="#2a6fbb")
+    ax.bar(x + 0.18, [row["mean_external_gain"] for row in rows], 0.36, label="eJSL", color="#d1495b")
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x, [row["profile"] for row in rows], rotation=20, ha="right")
+    ax.set_ylabel("Mean weighted-F1 gain")
+    ax.set_title("SAJER component ablation across backbones and corpora")
+    ax.legend(frameon=False)
+    save_figure(fig, out_dir, "ablation_gains")
+
+
+def write_report(path: Path, rows: Sequence[Mapping[str, object]], ablations: Sequence[Mapping[str, object]]) -> None:
+    corpus_gains = {
+        corpus: float(np.mean([float(row["source_gain"]) for row in rows if row["corpus"] == corpus]))
+        for corpus in CORPORA
+    }
+    best_by_corpus = {
+        corpus: max((row for row in rows if row["corpus"] == corpus), key=lambda row: float(row["source_fused_wf1"]))
+        for corpus in CORPORA
+    }
     lines = [
         "# Source-Anchored Joint Expert Routing (SAJER)",
         "",
@@ -165,15 +217,32 @@ def write_report(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
             f"{row['source_positive_seeds']}/{row['n_seeds']} | {row['external_base_wf1']:.4f} | "
             f"{row['external_fused_wf1']:.4f} | {row['external_gain']:+.4f} |"
         )
-    lines += ["", "## Per-class source F1", "", "| Baseline | Corpus | A | N | J | S |", "|---|---|---:|---:|---:|---:|"]
+    lines += [
+        "",
+        f"Mean source gain is {corpus_gains['MELD']:+.4f} on MELD and {corpus_gains['IEMOCAP']:+.4f} on IEMOCAP. "
+        f"The best fused scores are {best_by_corpus['MELD']['source_fused_wf1']:.4f} ({best_by_corpus['MELD']['baseline']}) "
+        f"and {best_by_corpus['IEMOCAP']['source_fused_wf1']:.4f} ({best_by_corpus['IEMOCAP']['baseline']}), respectively.",
+        "",
+        "## Per-class source F1",
+        "",
+        "| Baseline | Corpus | A | N | J | S |",
+        "|---|---|---:|---:|---:|---:|",
+    ]
     for row in sorted(rows, key=lambda value: (str(value["corpus"]), str(value["baseline"]))):
         values = " | ".join(f"{row[f'source_{label}_base_f1']:.3f}->{row[f'source_{label}_fused_f1']:.3f}" for label in LABELS)
         lines.append(f"| {row['baseline']} | {row['corpus']} | {values} |")
+    lines += ["", "## Component ablation", "", "| Profile | Cases | Mean source gain | Mean eJSL gain | Source positive | eJSL positive | Recovery | Damage |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for row in ablations:
+        lines.append(
+            f"| {row['profile']} | {row['n_backbone_corpora']} | {row['mean_source_gain']:+.4f} | "
+            f"{row['mean_external_gain']:+.4f} | {row['source_positive_cases']}/{row['n_backbone_corpora']} | "
+            f"{row['external_positive_cases']}/{row['n_backbone_corpora']} | {row['mean_recovery_rate']:.3f} | {row['mean_damage_rate']:.3f} |"
+        )
     lines += [
         "",
         "## Interpretation",
         "",
-        "- Source-domain improvement is positive for every backbone on both corpora; every selected source result improves in all five seeds.",
+        "- Source-domain mean improvement is positive for every backbone on both corpora. The source fallback prevents degradation per seed; the positive-seed column distinguishes strict gains from ties.",
         "- MELD separates into transfer regimes: CMERC, MAGTKD, and ConxGNN improve MELD while reducing eJSL, whereas MMGCN and ECERC improve both.",
         "- On IEMOCAP, all selected configurations improve both IEMOCAP and eJSL. The direction of transfer is therefore determined jointly by backbone and source corpus, not by BOBSL alone.",
         "- Routing and visual routing dominate fixed global fusion on most MELD runs; global fusion remains strongest for MAGTKD/ECERC on IEMOCAP.",
@@ -199,11 +268,15 @@ def main() -> None:
     out_dir = Path(args.out_dir).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     selected = select(read_inputs(args.input))
+    all_rows = read_inputs(args.input)
+    ablations = summarize_ablations(all_rows)
     write_csv(out_dir / "selected_main_results.csv", selected)
-    write_report(out_dir / "paper_report.md", selected)
+    write_csv(out_dir / "ablation_summary.csv", ablations)
+    write_report(out_dir / "paper_report.md", selected, ablations)
     plot_transfer_map(selected, out_dir)
     plot_source_performance(selected, out_dir)
     plot_class_gains(selected, out_dir)
+    plot_ablations(ablations, out_dir)
     print(f"[paper-summary] wrote {out_dir}")
 
 
