@@ -158,9 +158,13 @@ def summarize(rows):
     return results
 
 
-def select_best(groups):
+def select_best(groups, min_seeds=0, positive_only=False):
     buckets = defaultdict(list)
     for row in groups:
+        if row["n"] < min_seeds:
+            continue
+        if positive_only and not row["double_positive"]:
+            continue
         buckets[(row["baseline"], row["corpus"], row["bobsl_size"])].append(row)
     selected = []
     for _, rows in sorted(buckets.items()):
@@ -176,22 +180,11 @@ def select_best(groups):
     return selected
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", default="/raid_zoe/home/lr/maokeyu/sign/sast_large_sweep")
-    args = parser.parse_args()
-    root = Path(args.root).expanduser()
-    rows = collect_adapter_rows(root) + collect_ecerc_rows(root)
-    rows.sort(key=lambda row: (row["baseline"], row["corpus"], row["bobsl_size"], row["profile"], row["seed"]))
-    groups = summarize(rows)
-    best = select_best(groups)
-    write_csv(root / "all_seed_results.csv", rows)
-    write_csv(root / "all_group_results.csv", groups)
-    write_csv(root / "best_results.csv", best)
+def format_report(title, selection_note, best):
     lines = [
-        "# SAST large sweep best results",
+        f"# {title}",
         "",
-        "Selection maximizes the geometric mean of positive source/eJSL deltas.",
+        selection_note,
         "",
         "| baseline | corpus | BOBSL | profile | n | source base->method | eJSL base->method | delta source/eJSL | strict seeds |",
         "|---|---|---|---|---:|---:|---:|---:|---:|",
@@ -204,9 +197,36 @@ def main():
             f"{row['delta_source_mean']:+.4f}/{row['delta_external_mean']:+.4f} | "
             f"{row['strict_seeds']}/{row['n']} |"
         )
-    report = "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n"
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", default="/raid_zoe/home/lr/maokeyu/sign/sast_large_sweep")
+    args = parser.parse_args()
+    root = Path(args.root).expanduser()
+    rows = collect_adapter_rows(root) + collect_ecerc_rows(root)
+    rows.sort(key=lambda row: (row["baseline"], row["corpus"], row["bobsl_size"], row["profile"], row["seed"]))
+    groups = summarize(rows)
+    best = select_best(groups)
+    best_fiveseed = select_best(groups, min_seeds=5, positive_only=True)
+    write_csv(root / "all_seed_results.csv", rows)
+    write_csv(root / "all_group_results.csv", groups)
+    write_csv(root / "best_results.csv", best)
+    write_csv(root / "best_fiveseed_results.csv", best_fiveseed)
+    report = format_report(
+        "SAST large sweep best results",
+        "Selection maximizes the geometric mean of positive source/eJSL deltas.",
+        best,
+    )
+    final_report = format_report(
+        "SAST final five-seed results",
+        "Only configurations with at least five seeds and positive mean deltas on both source and eJSL are eligible.",
+        best_fiveseed,
+    )
     (root / "best_results.md").write_text(report, encoding="utf-8")
-    print(report)
+    (root / "best_fiveseed_results.md").write_text(final_report, encoding="utf-8")
+    print(final_report)
 
 
 if __name__ == "__main__":
