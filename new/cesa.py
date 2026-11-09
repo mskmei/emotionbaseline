@@ -45,6 +45,46 @@ def compute_emotion_subspace(
     )
 
 
+def compute_projection_statistics(
+    features: Mapping[str, Sequence],
+    keys: Sequence[str],
+    basis: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Return source mean/std in the low-rank emotion coordinate system."""
+    basis_array = torch.as_tensor(basis, dtype=torch.float32).cpu().numpy().astype(np.float64)
+    projected = []
+    for key in keys:
+        values = np.asarray(features[key], dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != basis_array.shape[0]:
+            raise ValueError(f"Unexpected feature shape for {key}: {values.shape}")
+        projected.append(values @ basis_array)
+    if not projected:
+        raise ValueError("Cannot compute projection statistics without source features")
+    coordinates = np.concatenate(projected, axis=0)
+    mean = coordinates.mean(axis=0)
+    scale = np.maximum(coordinates.std(axis=0), 1e-4)
+    return torch.tensor(mean, dtype=torch.float32), torch.tensor(scale, dtype=torch.float32)
+
+
+def prototype_alignment_loss(
+    adapted_features: torch.Tensor,
+    labels: torch.Tensor,
+    basis: torch.Tensor,
+    class_centers: torch.Tensor,
+    coordinate_mean: torch.Tensor,
+    coordinate_scale: torch.Tensor,
+) -> torch.Tensor:
+    """Align labeled samples to source class prototypes in standardized emotion coordinates."""
+    basis = basis.to(device=adapted_features.device, dtype=adapted_features.dtype)
+    class_centers = class_centers.to(device=adapted_features.device, dtype=adapted_features.dtype)
+    coordinate_mean = coordinate_mean.to(device=adapted_features.device, dtype=adapted_features.dtype)
+    coordinate_scale = coordinate_scale.to(device=adapted_features.device, dtype=adapted_features.dtype)
+    sample_coordinates = (adapted_features @ basis - coordinate_mean) / coordinate_scale
+    center_coordinates = (class_centers @ basis - coordinate_mean) / coordinate_scale
+    targets = center_coordinates.index_select(0, labels.long())
+    return torch.nn.functional.smooth_l1_loss(sample_coordinates, targets)
+
+
 class ContextDecoupledEmotionSubspaceAdapter(nn.Module):
     """Zero-initialized utterance adapter constrained to source emotion axes."""
 
@@ -84,4 +124,3 @@ class ContextDecoupledEmotionSubspaceAdapter(nn.Module):
             delta = raw
         delta = self.residual_scale * delta
         return visual + delta, delta
-
