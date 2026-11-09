@@ -17,7 +17,7 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(args.root).expanduser()
     rows = []
-    for external_path in sorted(root.glob("*/*_seed*/external_test_best_summary.json")):
+    for external_path in sorted(root.rglob("*_seed*/external_test_best_summary.json")):
         run_dir = external_path.parent
         source = load(run_dir / "source_test_best_summary.json")
         external = load(external_path)
@@ -29,11 +29,14 @@ def main() -> None:
         final_external_path = run_dir / "external_test_final_summary.json"
         final_source = load(final_source_path) if final_source_path.exists() else None
         final_external = load(final_external_path) if final_external_path.exists() else None
-        corpus = run_dir.parent.name.upper()
+        relative_parts = run_dir.relative_to(root).parts
+        corpus = next((part.upper() for part in relative_parts if part.lower() in {"meld", "iemocap"}), "UNKNOWN")
+        bobsl_size = next((part.lower() for part in relative_parts if part.lower().startswith("b") and part.lower().endswith("k")), "b5k")
         profile, seed_text = run_dir.name.rsplit("_seed", 1)
         rows.append(
             {
                 "corpus": corpus,
+                "bobsl_size": bobsl_size,
                 "profile": profile,
                 "seed": int(seed_text),
                 "base_source": base_source["weighted_f1"],
@@ -63,17 +66,17 @@ def main() -> None:
     lines = [
         "# CESA screen",
         "",
-        "| corpus | profile | source-selected delta | fixed-final delta | oracle delta | selected source/eJSL |",
-        "|---|---|---:|---:|---:|---:|",
+        "| corpus | BOBSL | profile | source-selected delta | fixed-final delta | oracle delta | selected source/eJSL |",
+        "|---|---|---|---:|---:|---:|---:|",
     ]
     for row in sorted(rows, key=lambda value: (value["corpus"], -(value["delta_source"] + value["delta_external"]))):
         lines.append(
-            f"| {row['corpus']} | {row['profile']} | {row['delta_source']:+.4f}/{row['delta_external']:+.4f} | "
+            f"| {row['corpus']} | {row['bobsl_size']} | {row['profile']} | {row['delta_source']:+.4f}/{row['delta_external']:+.4f} | "
             f"{row['final_delta_source']:+.4f}/{row['final_delta_external']:+.4f} | "
             f"{row['oracle_delta_source']:+.4f}/{row['oracle_delta_external']:+.4f} | "
             f"{row['source']:.4f}/{row['external']:.4f} |"
             if row["final_source"] != ""
-            else f"| {row['corpus']} | {row['profile']} | {row['delta_source']:+.4f}/{row['delta_external']:+.4f} | "
+            else f"| {row['corpus']} | {row['bobsl_size']} | {row['profile']} | {row['delta_source']:+.4f}/{row['delta_external']:+.4f} | "
             f"NA | {row['oracle_delta_source']:+.4f}/{row['oracle_delta_external']:+.4f} | "
             f"{row['source']:.4f}/{row['external']:.4f} |"
         )

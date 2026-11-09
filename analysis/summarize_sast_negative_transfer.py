@@ -28,16 +28,25 @@ def main() -> None:
     args = parser.parse_args()
     root = Path(args.root).expanduser()
     seed_rows = []
-    for path in sorted(root.glob("*/*_seed*/summary.json")):
+    for path in sorted(root.rglob("*_seed*/summary.json")):
         match = re.match(r"(.+)_seed(\d+)$", path.parent.name)
         if not match:
             continue
         data = read_json(path)
         if not data:
             continue
+        relative_parts = path.relative_to(root).parts
+        baseline = next(
+            (part for part in relative_parts if part.upper() in {"MMGCN", "MAGTKD", "CMERC", "CONXGNN", "ECERC"}),
+            path.parent.parent.name,
+        )
+        corpus = next((part.upper() for part in relative_parts if part.lower() in {"meld", "iemocap"}), "MELD")
+        bobsl_size = next((part.lower() for part in relative_parts if re.fullmatch(r"b\d+k", part.lower())), "b5k")
         seed_rows.append(
             {
-                "baseline": path.parent.parent.name,
+                "baseline": baseline,
+                "corpus": corpus,
+                "bobsl_size": bobsl_size,
                 "profile": match.group(1),
                 "seed": int(match.group(2)),
                 "base_source": data.get("base_source"),
@@ -55,12 +64,14 @@ def main() -> None:
         )
     groups = {}
     for row in seed_rows:
-        groups.setdefault((row["baseline"], row["profile"]), []).append(row)
+        groups.setdefault((row["baseline"], row["corpus"], row["bobsl_size"], row["profile"]), []).append(row)
     group_rows = []
-    for (baseline, profile), rows in groups.items():
+    for (baseline, corpus, bobsl_size, profile), rows in groups.items():
         group_rows.append(
             {
                 "baseline": baseline,
+                "corpus": corpus,
+                "bobsl_size": bobsl_size,
                 "profile": profile,
                 "n": len(rows),
                 "seeds": " ".join(str(row["seed"]) for row in sorted(rows, key=lambda item: item["seed"])),
@@ -77,7 +88,7 @@ def main() -> None:
                 ),
             }
         )
-    group_rows.sort(key=lambda row: (row["baseline"], -row["delta_external"], -row["delta_source"]))
+    group_rows.sort(key=lambda row: (row["baseline"], row["corpus"], row["bobsl_size"], -row["delta_external"], -row["delta_source"]))
     out_path = Path(args.out_csv).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(group_rows[0]) if group_rows else []
@@ -88,7 +99,7 @@ def main() -> None:
             writer.writerows(group_rows)
     for row in group_rows:
         print(
-            f"[SAST-SUMMARY] {row['baseline']}/{row['profile']} n={row['n']} "
+            f"[SAST-SUMMARY] {row['baseline']}/{row['corpus']}/{row['bobsl_size']}/{row['profile']} n={row['n']} "
             f"source={row['source']:.4f} ({row['delta_source']:+.4f}) "
             f"external={row['external']:.4f} ({row['delta_external']:+.4f}) "
             f"oracle={row['oracle_source']:.4f}/{row['oracle_external']:.4f} "
