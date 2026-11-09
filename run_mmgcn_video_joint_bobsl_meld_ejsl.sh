@@ -208,6 +208,16 @@ for config in $CONFIGS; do
       gamma=2.0
       extra_args=()
       ;;
+    joint_b1k)
+      train_pkl="$(joint_pkl_for 1000)"
+      build_joint_if_needed 1000 "$train_pkl"
+      bobsl_max=1000
+      lr=0.0003
+      dropout=0.40
+      loss=focal
+      gamma=2.0
+      extra_args=()
+      ;;
     joint_b2k)
       train_pkl="$(joint_pkl_for 2000)"
       build_joint_if_needed 2000 "$train_pkl"
