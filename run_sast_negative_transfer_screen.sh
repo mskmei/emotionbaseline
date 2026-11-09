@@ -10,6 +10,7 @@ BOBSL_K=${BOBSL_K:-5}
 GPU=${GPU:-0}
 export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
+BASE_MODE=${BASE_MODE:-source_only}
 SEEDS=${SEEDS:-42}
 PROFILES=${PROFILES:-"context_r3 context_r1 proto10_r3 proto50_r3 safe_r3 open_r3 source2_r3 full_safe low_lr very_low_lr rank1_low rank1_safe b25_low source4_r3 scale05_r3 scale1_r3 no_weight"}
 EPOCHS=${EPOCHS:-12}
@@ -58,6 +59,18 @@ set_paths() {
 }
 
 checkpoint_for_seed() {
+  if [[ "$BASE_MODE" == plain_joint ]]; then
+    if [[ "$BASELINE" == MMGCN ]]; then
+      printf '%s/joint_b%sk_seed%s/video/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
+    else
+      printf '%s/joint_b%sk_seed%s/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
+    fi
+    return
+  fi
+  if [[ "$BASE_MODE" != source_only ]]; then
+    echo "Unsupported BASE_MODE=$BASE_MODE" >&2
+    return 2
+  fi
   if [[ "$BASELINE" == MMGCN ]]; then
     printf '%s/%s_seed%s/video/model_best.pt\n' "$BASE_ROOT" "$BASE_PREFIX" "$1"
   else
@@ -101,7 +114,7 @@ for corpus in $CORPORA; do
       continue
     fi
     checkpoint=$(checkpoint_for_seed "$seed")
-    echo "[SAST-SCREEN] baseline=$BASELINE corpus=$corpus bobsl=${BOBSL_K}k profile=$profile seed=$seed gpu=$GPU" | tee "$log_path"
+    echo "[SAST-SCREEN] baseline=$BASELINE corpus=$corpus bobsl=${BOBSL_K}k base_mode=$BASE_MODE profile=$profile seed=$seed gpu=$GPU" | tee "$log_path"
     "$PYTHON_BIN" "$TRAINER" \
       --train_pkl "$TRAIN_PKL" \
       --external_test_pkl "$EXTERNAL_PKL" \
