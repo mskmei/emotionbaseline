@@ -12,6 +12,8 @@ BOBSL_K=${BOBSL_K:-5}
 PROFILES=${PROFILES:-"rank1 rank3 full rank1_safe rank1_b10 rank1_b10_kl1 rank1_b10_kl5 rank1_b05_kl10 rank1_b25 rank1_src4 rank1_unweighted rank3_b25 rank3_safe rank3_open very_low_lr high_lr scale05 scale4"}
 BASE_MODE=${BASE_MODE:-source_only}
 SEEDS=${SEEDS:-${SEED:-42}}
+SEED_OFFSET=${SEED_OFFSET:-0}
+PROFILE_SUFFIX=${PROFILE_SUFFIX:-}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/conxgnn_sast/screen}
 EPOCHS_OVERRIDE=${EPOCHS:-}
 
@@ -76,20 +78,22 @@ for corpus in $CORPORA; do
   for profile in $PROFILES; do
     profile_args "$profile"
     for seed in $SEEDS; do
-    out_dir="$WORK_ROOT/${corpus,,}/b${BOBSL_K}k/${profile}_seed${seed}"
-    log_path="$WORK_ROOT/logs/${corpus,,}_b${BOBSL_K}k_${profile}_seed${seed}.log"
+    run_profile="${profile}${PROFILE_SUFFIX}"
+    train_seed=$((seed + SEED_OFFSET))
+    out_dir="$WORK_ROOT/${corpus,,}/b${BOBSL_K}k/${run_profile}_seed${seed}"
+    log_path="$WORK_ROOT/logs/${corpus,,}_b${BOBSL_K}k_${run_profile}_seed${seed}.log"
     if [[ -s "$out_dir/summary.json" ]]; then
       echo "[SAST-SCREEN] skip $out_dir"
       continue
     fi
     base_checkpoint=$(checkpoint_for_seed "$seed")
-    echo "[SAST-SCREEN] corpus=$corpus bobsl=${BOBSL_K}k base_mode=$BASE_MODE profile=$profile seed=$seed gpu=$GPU" | tee "$log_path"
+    echo "[SAST-SCREEN] corpus=$corpus bobsl=${BOBSL_K}k base_mode=$BASE_MODE profile=$run_profile base_seed=$seed train_seed=$train_seed gpu=$GPU" | tee "$log_path"
     "$PYTHON_BIN" new2/ConxGNN/train_eval_conxgnn_sast_visual_anjs.py \
       --train_pkl "$TRAIN_PKL" \
       --external_test_pkl "$EXTERNAL_PKL" \
       --base_checkpoint "$base_checkpoint" \
       --out_dir "$out_dir" \
-      --seed "$seed" \
+      --seed "$train_seed" \
       --epochs "$EPOCHS" \
       --source_batch_size 8 \
       --bobsl_batch_size 64 \
