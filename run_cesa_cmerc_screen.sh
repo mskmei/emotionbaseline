@@ -10,7 +10,8 @@ PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
 BOBSL_K=${BOBSL_K:-5}
 PROFILES=${PROFILES:-"conservative balanced open fullspace nosafety lowbobsl rank1_open rank1_safe very_low_lr high_lr source2 source4 bobsl2 scale05 scale4"}
-SEED=${SEED:-42}
+BASE_MODE=${BASE_MODE:-source_only}
+SEEDS=${SEEDS:-${SEED:-42}}
 EPOCHS=${EPOCHS:-20}
 RESUME_DONE=${RESUME_DONE:-1}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/cesa_cmerc/screen}
@@ -53,15 +54,28 @@ corpus_paths() {
     MELD)
       TRAIN_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/visual_joint_bobsl_meld/joint_pkls/joint_b${BOBSL_K}k.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/ejsl_cmerc_visual_anjs4_translated.pkl
-      BASE_CHECKPOINT=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/visual_joint_bobsl_meld/meld_only_seed${SEED}/model_best.pt
+      BASE_ROOT=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/visual_joint_bobsl_meld
+      BASE_PREFIX=meld_only
       ;;
     IEMOCAP)
       TRAIN_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap/joint_pkls/iemocap_bobsl${BOBSL_K}000_trainonly_sample123.pkl
       EXTERNAL_PKL=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_meld_ejsl/features/ejsl_cmerc_visual_anjs4_translated.pkl
-      BASE_CHECKPOINT=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap/iemocap_only_seed${SEED}/model_best.pt
+      BASE_ROOT=/raid_zoe/home/lr/maokeyu/sign/cmerc_bobsl_iemocap_ejsl/video_joint_bobsl_iemocap
+      BASE_PREFIX=iemocap_only
       ;;
     *) echo "Unknown corpus: $1" >&2; return 2 ;;
   esac
+}
+
+checkpoint_for_seed() {
+  if [[ "$BASE_MODE" == plain_joint ]]; then
+    printf '%s/joint_b%sk_seed%s/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
+  elif [[ "$BASE_MODE" == source_only ]]; then
+    printf '%s/%s_seed%s/model_best.pt\n' "$BASE_ROOT" "$BASE_PREFIX" "$1"
+  else
+    echo "Unsupported BASE_MODE=$BASE_MODE" >&2
+    return 2
+  fi
 }
 
 mkdir -p "$WORK_ROOT/logs"
@@ -69,20 +83,22 @@ for corpus in $CORPORA; do
   corpus_paths "$corpus"
   for profile in $PROFILES; do
     profile_args "$profile"
-    out_dir="$WORK_ROOT/${corpus,,}/b${BOBSL_K}k/${profile}_seed${SEED}"
-    log_path="$WORK_ROOT/logs/${corpus,,}_b${BOBSL_K}k_${profile}_seed${SEED}.log"
+    for seed in $SEEDS; do
+    out_dir="$WORK_ROOT/${corpus,,}/b${BOBSL_K}k/${profile}_seed${seed}"
+    log_path="$WORK_ROOT/logs/${corpus,,}_b${BOBSL_K}k_${profile}_seed${seed}.log"
     if [[ "$RESUME_DONE" == 1 && -s "$out_dir/external_test_best_summary.json" ]]; then
       echo "[CESA-SCREEN] skip $out_dir"
       continue
     fi
     mkdir -p "$out_dir"
-    echo "[CESA-SCREEN] corpus=$corpus profile=$profile seed=$SEED gpu=$GPU" | tee "$log_path"
+    base_checkpoint=$(checkpoint_for_seed "$seed")
+    echo "[CESA-SCREEN] corpus=$corpus bobsl=${BOBSL_K}k base_mode=$BASE_MODE profile=$profile seed=$seed gpu=$GPU" | tee "$log_path"
     "$PYTHON_BIN" new2/CMERC/train_eval_cmerc_cesa_visual_anjs.py \
       --train_pkl "$TRAIN_PKL" \
       --external_test_pkl "$EXTERNAL_PKL" \
-      --base_checkpoint "$BASE_CHECKPOINT" \
+      --base_checkpoint "$base_checkpoint" \
       --out_dir "$out_dir" \
-      --seed "$SEED" \
+      --seed "$seed" \
       --epochs "$EPOCHS" \
       --source_batch_size 8 \
       --bobsl_batch_size 64 \
@@ -94,6 +110,7 @@ for corpus in $CORPORA; do
       --local_source_weight 0.25 \
       --max_grad_norm 5.0 \
       "${PROFILE_ARGS[@]}" 2>&1 | tee -a "$log_path"
+    done
   done
 done
 
