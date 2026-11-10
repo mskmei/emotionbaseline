@@ -197,7 +197,7 @@ def train_epoch(model, source_set, bobsl_set, optimizer, class_weights, device, 
     source_set.shuffle(args.seed + epoch)
     bobsl_set.shuffle(args.seed + epoch + 1000)
     bobsl_indices = cycle(range(len(bobsl_set)))
-    totals = {key: 0.0 for key in ["loss", "source", "bobsl", "safety", "residual"]}
+    totals = {key: 0.0 for key in ["loss", "source", "bobsl", "safety", "stability", "residual"]}
     steps = 0
     for source_index in range(len(source_set)):
         optimizer.zero_grad(set_to_none=True)
@@ -215,6 +215,11 @@ def train_epoch(model, source_set, bobsl_set, optimizer, class_weights, device, 
         )
         source_loss = source_nll.mean()
         safety_loss = F.relu(source_nll - base_nll + args.safety_margin).mean()
+        stability_loss = F.kl_div(
+            F.log_softmax(source_adapted[source_valid], dim=-1),
+            F.softmax(source_base[source_valid], dim=-1),
+            reduction="batchmean",
+        )
         source_delta = flatten_batch(source_delta, source["text_len_tensor"])
         source_residual = source_delta[source_valid].pow(2).sum(dim=-1).mean()
 
@@ -231,6 +236,7 @@ def train_epoch(model, source_set, bobsl_set, optimizer, class_weights, device, 
             args.source_weight * source_loss
             + args.bobsl_weight * bobsl_loss
             + args.safety_weight * safety_loss
+            + args.stability_weight * stability_loss
             + args.residual_weight * residual_loss
         )
         loss.backward()
@@ -242,6 +248,7 @@ def train_epoch(model, source_set, bobsl_set, optimizer, class_weights, device, 
             "source": source_loss,
             "bobsl": bobsl_loss,
             "safety": safety_loss,
+            "stability": stability_loss,
             "residual": residual_loss,
         }.items():
             totals[key] += float(value.detach().item())
@@ -430,6 +437,7 @@ def parse_args():
     parser.add_argument("--bobsl_weight", type=float, default=1.0)
     parser.add_argument("--safety_weight", type=float, default=0.5)
     parser.add_argument("--safety_margin", type=float, default=0.0)
+    parser.add_argument("--stability_weight", type=float, default=0.0)
     parser.add_argument("--residual_weight", type=float, default=1e-3)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
