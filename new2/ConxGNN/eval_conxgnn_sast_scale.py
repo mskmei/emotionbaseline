@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
+import torch.nn.functional as F
 
 THIS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = THIS_DIR.parents[1]
@@ -25,6 +26,40 @@ def parse_scales(value: str):
     if not scales or scales[0] < 0:
         raise ValueError("--scale_factors must contain non-negative values")
     return scales
+
+
+def parse_margins(value: str):
+    return sorted({float(item.strip()) for item in value.split(",") if item.strip()}, reverse=True)
+
+
+@torch.no_grad()
+def evaluate_confidence_gate(model, dataset, device, margin: float):
+    model.eval()
+    losses, counts, golds, preds, probs, ids = [], [], [], [], [], []
+    for index in range(len(dataset)):
+        raw = dataset[index]
+        data = sast.move_batch(raw, device)
+        labels = data["label_tensor"]
+        valid = labels.ge(0)
+        base_logits, _ = model(data, adapted=False)
+        adapted_logits, _ = model(data, adapted=True)
+        base_prob = F.softmax(base_logits[valid], dim=-1)
+        adapted_prob = F.softmax(adapted_logits[valid], dim=-1)
+        use_adapter = adapted_prob.max(dim=-1).values >= base_prob.max(dim=-1).values + margin
+        probability = torch.where(use_adapter.unsqueeze(-1), adapted_prob, base_prob)
+        target = labels[valid]
+        if not len(target):
+            continue
+        loss = F.nll_loss(probability.clamp_min(1e-12).log(), target)
+        pred = probability.argmax(dim=-1)
+        losses.append(float(loss.item()) * len(target))
+        counts.append(len(target))
+        golds.extend(target.cpu().numpy().astype(int).tolist())
+        preds.extend(pred.cpu().numpy().astype(int).tolist())
+        probs.append(probability.cpu().numpy().astype("float32"))
+        mask = valid.cpu().numpy().astype(bool).tolist()
+        ids.extend([item_id for item_id, keep in zip(raw["item_ids"], mask) if keep])
+    return sast.metric_result(losses, counts, golds, preds, probs, ids)
 
 
 def load_model(adapter_checkpoint: Path, device: torch.device):
@@ -55,6 +90,7 @@ def main():
     parser.add_argument("--adapter_checkpoint", required=True)
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--scale_factors", default="0,0.1,0.25,0.5,0.75,1.0,1.25")
+    parser.add_argument("--confidence_margins", default="")
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1", "accuracy"], default="weighted_f1")
     parser.add_argument("--no_cuda", action="store_true")
     args = parser.parse_args()
@@ -72,27 +108,37 @@ def main():
     best_source = copy.deepcopy(base_source)
     best_external = copy.deepcopy(base_external)
     best_factor = 0.0
+    best_margin = None
     best_score = float(base_source[args.selection_metric])
     rows = []
+    margins = parse_margins(args.confidence_margins)
     for factor in parse_scales(args.scale_factors):
         model.adapter.residual_scale = original_scale * factor
-        source = sast.evaluate(model, source_test, device, adapted=factor > 0)
-        external = sast.evaluate(model, external_test, device, adapted=factor > 0)
-        score = float(source[args.selection_metric])
-        rows.append(
-            {
-                "scale_factor": factor,
-                "source": source["weighted_f1"],
-                "external": external["weighted_f1"],
-                "delta_source": source["weighted_f1"] - base_source["weighted_f1"],
-                "delta_external": external["weighted_f1"] - base_external["weighted_f1"],
-            }
-        )
-        if score > best_score:
-            best_score = score
-            best_factor = factor
-            best_source = copy.deepcopy(source)
-            best_external = copy.deepcopy(external)
+        current_margins = margins if factor > 0 and margins else [None]
+        for margin in current_margins:
+            if margin is None:
+                source = sast.evaluate(model, source_test, device, adapted=factor > 0)
+                external = sast.evaluate(model, external_test, device, adapted=factor > 0)
+            else:
+                source = evaluate_confidence_gate(model, source_test, device, margin)
+                external = evaluate_confidence_gate(model, external_test, device, margin)
+            score = float(source[args.selection_metric])
+            rows.append(
+                {
+                    "scale_factor": factor,
+                    "confidence_margin": margin,
+                    "source": source["weighted_f1"],
+                    "external": external["weighted_f1"],
+                    "delta_source": source["weighted_f1"] - base_source["weighted_f1"],
+                    "delta_external": external["weighted_f1"] - base_external["weighted_f1"],
+                }
+            )
+            if score > best_score:
+                best_score = score
+                best_factor = factor
+                best_margin = margin
+                best_source = copy.deepcopy(source)
+                best_external = copy.deepcopy(external)
 
     model.adapter.residual_scale = original_scale * best_factor
     common = {
@@ -105,6 +151,7 @@ def main():
         "adapter_checkpoint": str(checkpoint_path),
         "best_epoch": int(torch.load(checkpoint_path, map_location="cpu").get("epoch", 0)),
         "selected_scale_factor": best_factor,
+        "selected_confidence_margin": best_margin,
         "base_source_weighted_f1": base_source["weighted_f1"],
         "base_external_weighted_f1": base_external["weighted_f1"],
         "scale_results": rows,
@@ -130,12 +177,13 @@ def main():
             "args": vars(train_args),
             "info": info,
             "selected_scale_factor": best_factor,
+            "selected_confidence_margin": best_margin,
             "source_score": best_score,
         },
         out_dir / "model_best.pt",
     )
     print(
-        f"[SAST-SCALE] factor={best_factor:g} source={best_source['weighted_f1']:.4f} "
+        f"[SAST-SCALE] factor={best_factor:g} margin={best_margin} source={best_source['weighted_f1']:.4f} "
         f"({summary['delta_source']:+.4f}) external={best_external['weighted_f1']:.4f} "
         f"({summary['delta_external']:+.4f}) out={out_dir}"
     )

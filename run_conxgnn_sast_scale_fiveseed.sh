@@ -14,6 +14,7 @@ SOURCE_PROFILE=${SOURCE_PROFILE:-rank1_b10_kl1}
 OUT_PROFILE=${OUT_PROFILE:-rank1_b10_kl1_scaled}
 SEEDS=${SEEDS:-"35 36 37 41 42"}
 SCALE_FACTORS=${SCALE_FACTORS:-"0,0.1,0.25,0.5,0.75,1.0,1.25"}
+CONFIDENCE_MARGINS=${CONFIDENCE_MARGINS:-""}
 
 for seed in $SEEDS; do
   source_dir="$WORK_ROOT/${CORPUS}/b${BOBSL_K}k/${SOURCE_PROFILE}_seed${seed}"
@@ -25,5 +26,6 @@ for seed in $SEEDS; do
   "$PYTHON_BIN" new2/ConxGNN/eval_conxgnn_sast_scale.py \
     --adapter_checkpoint "$source_dir/model_best.pt" \
     --out_dir "$out_dir" \
-    --scale_factors "$SCALE_FACTORS"
+    --scale_factors "$SCALE_FACTORS" \
+    --confidence_margins "$CONFIDENCE_MARGINS"
 done
