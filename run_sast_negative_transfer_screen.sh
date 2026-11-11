@@ -11,6 +11,7 @@ GPU=${GPU:-0}
 export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 BASE_MODE=${BASE_MODE:-source_only}
+JOINT_TEACHER=${JOINT_TEACHER:-0}
 SEEDS=${SEEDS:-42}
 PROFILES=${PROFILES:-"context_r3 context_r1 proto10_r3 proto50_r3 safe_r3 open_r3 source2_r3 full_safe low_lr very_low_lr rank1_low rank1_safe b25_low source4_r3 scale05_r3 scale1_r3 no_weight"}
 EPOCHS=${EPOCHS:-12}
@@ -78,6 +79,14 @@ checkpoint_for_seed() {
   fi
 }
 
+joint_checkpoint_for_seed() {
+  if [[ "$BASELINE" == MMGCN ]]; then
+    printf '%s/joint_b%sk_seed%s/video/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
+  else
+    printf '%s/joint_b%sk_seed%s/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
+  fi
+}
+
 profile_args() {
   case "$1" in
     context_r3) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.0) ;;
@@ -97,6 +106,22 @@ profile_args() {
     scale05_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 0.5 --lr 0.0002 --prototype_weight 0.1) ;;
     scale1_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 1.0 --lr 0.0002 --prototype_weight 0.1) ;;
     no_weight) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --no-class_weight) ;;
+    dual_all_w025) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.25) ;;
+    dual_all_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5) ;;
+    dual_all_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0) ;;
+    dual_all_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0) ;;
+    dual_better_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5 --joint_teacher_better_only) ;;
+    dual_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    dual_better_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0 --joint_teacher_better_only) ;;
+    dual_correct_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5 --joint_teacher_correct_only) ;;
+    dual_correct_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_teacher_correct_only) ;;
+    dual_correct_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0 --joint_teacher_correct_only) ;;
+    dual_better_correct_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only --joint_teacher_correct_only) ;;
+    dual_better_correct_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0 --joint_teacher_better_only --joint_teacher_correct_only) ;;
+    dual_rank1_better_w1) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    dual_soft_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_distill_temperature 4.0 --joint_teacher_better_only) ;;
+    dual_safe_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --residual_scale 1.0 --bobsl_weight 0.5 --safety_weight 1.0 --stability_weight 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    dual_open_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0002 --residual_scale 4.0 --safety_weight 0.25 --stability_weight 0.05 --prototype_weight 0.1 --residual_weight 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
 }
@@ -114,11 +139,17 @@ for corpus in $CORPORA; do
       continue
     fi
     checkpoint=$(checkpoint_for_seed "$seed")
+    JOINT_ARGS=()
+    if [[ "$JOINT_TEACHER" == 1 ]]; then
+      joint_checkpoint=$(joint_checkpoint_for_seed "$seed")
+      JOINT_ARGS=(--joint_teacher_checkpoint "$joint_checkpoint")
+    fi
     echo "[SAST-SCREEN] baseline=$BASELINE corpus=$corpus bobsl=${BOBSL_K}k base_mode=$BASE_MODE profile=$profile seed=$seed gpu=$GPU" | tee "$log_path"
     "$PYTHON_BIN" "$TRAINER" \
       --train_pkl "$TRAIN_PKL" \
       --external_test_pkl "$EXTERNAL_PKL" \
       --base_checkpoint "$checkpoint" \
+      "${JOINT_ARGS[@]}" \
       --out_dir "$out_dir" \
       --seed "$seed" \
       --epochs "$EPOCHS" \

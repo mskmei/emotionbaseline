@@ -187,8 +187,36 @@ def adapter_parameters(model: SASTMAGTKD) -> Iterable[nn.Parameter]:
     yield from model.adapter.parameters()
 
 
+def joint_teacher_loss(
+    student_logits: torch.Tensor,
+    teacher_logits: torch.Tensor,
+    base_logits: torch.Tensor,
+    targets: torch.Tensor,
+    args,
+) -> torch.Tensor:
+    temperature = args.joint_distill_temperature
+    per_sample = F.kl_div(
+        F.log_softmax(student_logits / temperature, dim=-1),
+        F.softmax(teacher_logits / temperature, dim=-1),
+        reduction="none",
+    ).sum(dim=-1) * (temperature * temperature)
+    keep = torch.ones_like(targets, dtype=torch.bool)
+    if args.joint_teacher_correct_only:
+        keep &= teacher_logits.argmax(dim=-1).eq(targets)
+    if args.joint_teacher_better_only:
+        teacher_nll = F.cross_entropy(teacher_logits, targets, reduction="none")
+        base_nll = F.cross_entropy(base_logits, targets, reduction="none")
+        keep &= teacher_nll + args.joint_teacher_advantage_margin < base_nll
+    if args.joint_teacher_confidence > 0:
+        keep &= F.softmax(teacher_logits, dim=-1).amax(dim=-1) >= args.joint_teacher_confidence
+    if not torch.any(keep):
+        return per_sample.new_zeros(())
+    return per_sample[keep].mean()
+
+
 def train_epoch(
     model: SASTMAGTKD,
+    joint_teacher: Optional[SASTMAGTKD],
     source_loader: DataLoader,
     bobsl_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
@@ -203,7 +231,10 @@ def train_epoch(
     model.backbone.eval()
     model.adapter.train()
     bobsl_iter = cycle(bobsl_loader)
-    totals = {key: 0.0 for key in ("loss", "source", "bobsl", "safety", "stability", "prototype", "residual")}
+    totals = {
+        key: 0.0
+        for key in ("loss", "source", "bobsl", "safety", "stability", "joint", "prototype", "residual")
+    }
     steps = 0
     for source_data in source_loader:
         optimizer.zero_grad(set_to_none=True)
@@ -224,6 +255,16 @@ def train_epoch(
         stability_loss = F.kl_div(
             F.log_softmax(source_current, dim=-1), F.softmax(base_current, dim=-1), reduction="batchmean"
         )
+        if joint_teacher is not None and args.joint_distill_weight > 0:
+            with torch.no_grad():
+                teacher_logits, _ = joint_teacher(
+                    text, audio_kd, video_kd, qmask, umask, lengths, adapted=False
+                )
+            joint_loss = joint_teacher_loss(
+                source_current, teacher_logits[valid], base_current, targets, args
+            )
+        else:
+            joint_loss = source_loss.new_zeros(())
         source_delta_flat = flatten_seq(source_delta, lengths)[valid_flat]
         residual_loss = source_delta_flat.pow(2).sum(dim=-1).mean()
 
@@ -248,6 +289,7 @@ def train_epoch(
             + args.bobsl_weight * bobsl_loss
             + args.safety_weight * safety_loss
             + args.stability_weight * stability_loss
+            + args.joint_distill_weight * joint_loss
             + args.prototype_weight * prototype_loss
             + args.residual_weight * residual_loss
         )
@@ -261,6 +303,7 @@ def train_epoch(
             "bobsl": bobsl_loss,
             "safety": safety_loss,
             "stability": stability_loss,
+            "joint": joint_loss,
             "prototype": prototype_loss,
             "residual": residual_loss,
         }.items():
@@ -293,6 +336,10 @@ def train(args) -> None:
     train_pkl = base.resolve_path(args.train_pkl, must_exist=True)
     external_pkl = base.resolve_path(args.external_test_pkl, must_exist=True)
     checkpoint_path = base.resolve_path(args.base_checkpoint, must_exist=True)
+    joint_checkpoint_path = (
+        base.resolve_path(args.joint_teacher_checkpoint, must_exist=True)
+        if args.joint_teacher_checkpoint else None
+    )
     out_dir = base.resolve_path(args.out_dir, must_exist=False)
     out_dir.mkdir(parents=True, exist_ok=True)
     info = base.inspect_pkl(train_pkl)
@@ -319,6 +366,14 @@ def train(args) -> None:
     model = SASTMAGTKD(backbone, int(info["d_visual"]), basis, args).to(device)
     for parameter in model.backbone.parameters():
         parameter.requires_grad = False
+    joint_teacher = None
+    if joint_checkpoint_path is not None:
+        teacher_args = copy.deepcopy(args)
+        teacher_backbone = load_backbone(teacher_args, joint_checkpoint_path, device)
+        joint_teacher = SASTMAGTKD(teacher_backbone, int(info["d_visual"]), basis, teacher_args).to(device)
+        for parameter in joint_teacher.parameters():
+            parameter.requires_grad = False
+        joint_teacher.eval()
     source_train = make_dataset(train_pkl, "train", "source")
     bobsl_train = make_dataset(train_pkl, "train", "bobsl")
     source_test = make_dataset(train_pkl, "test")
@@ -333,6 +388,8 @@ def train(args) -> None:
 
     base_source = evaluate(model, source_test_loader, device, adapted=False)
     base_external = evaluate(model, external_test_loader, device, adapted=False)
+    joint_source = evaluate(joint_teacher, source_test_loader, device, adapted=False) if joint_teacher else None
+    joint_external = evaluate(joint_teacher, external_test_loader, device, adapted=False) if joint_teacher else None
     best_source = copy.deepcopy(base_source)
     best_external = copy.deepcopy(base_external)
     best_state = copy.deepcopy(model.state_dict())
@@ -347,12 +404,17 @@ def train(args) -> None:
     trainable = sum(parameter.numel() for parameter in adapter_parameters(model))
     print(f"[SAST-MAGTKD] source={len(source_train)} bobsl={len(bobsl_train)} trainable={trainable}")
     print(f"[SAST-MAGTKD] base source={base_source['weighted_f1']:.4f} external={base_external['weighted_f1']:.4f}")
+    if joint_source is not None:
+        print(
+            f"[SAST-MAGTKD] joint teacher source={joint_source['weighted_f1']:.4f} "
+            f"external={joint_external['weighted_f1']:.4f}"
+        )
     print(f"[SAST-MAGTKD] basis={json.dumps(basis_meta)}")
 
     for epoch in range(1, args.epochs + 1):
         start = time.time()
         train_metrics = train_epoch(
-            model, source_loader, bobsl_loader, optimizer, weights, basis, centers,
+            model, joint_teacher, source_loader, bobsl_loader, optimizer, weights, basis, centers,
             coordinate_mean, coordinate_scale, device, args
         )
         source_result = evaluate(model, source_test_loader, device, adapted=True)
@@ -400,6 +462,7 @@ def train(args) -> None:
         "train_pkl": str(train_pkl),
         "external_test_pkl": str(external_pkl),
         "base_checkpoint": str(checkpoint_path),
+        "joint_teacher_checkpoint": str(joint_checkpoint_path) if joint_checkpoint_path else "",
         "basis_meta": basis_meta,
         "best_epoch": best_epoch,
         "base_source_weighted_f1": base_source["weighted_f1"],
@@ -407,6 +470,9 @@ def train(args) -> None:
     }
     base.save_report(base_source, out_dir, "source_test_base", {**common, "selection": "base"})
     base.save_report(base_external, out_dir, "external_test_base", {**common, "selection": "base"})
+    if joint_source is not None:
+        base.save_report(joint_source, out_dir, "source_test_joint", {**common, "selection": "joint_teacher"})
+        base.save_report(joint_external, out_dir, "external_test_joint", {**common, "selection": "joint_teacher"})
     base.save_report(best_source, out_dir, "source_test_best", {**common, "selection": "source"})
     base.save_report(best_external, out_dir, "external_test_best", {**common, "selection": "source"})
     base.save_report(oracle_source, out_dir, "source_test_oracle", {**common, "selection": "diagnostic_oracle", "oracle_epoch": oracle_epoch})
@@ -419,6 +485,8 @@ def train(args) -> None:
         **common,
         "base_source": base_source["weighted_f1"],
         "base_external": base_external["weighted_f1"],
+        "joint_source": joint_source["weighted_f1"] if joint_source else None,
+        "joint_external": joint_external["weighted_f1"] if joint_external else None,
         "best_source": best_source["weighted_f1"],
         "best_external": best_external["weighted_f1"],
         "delta_source": best_source["weighted_f1"] - base_source["weighted_f1"],
@@ -440,6 +508,7 @@ def parse_args():
     parser.add_argument("--train_pkl", required=True)
     parser.add_argument("--external_test_pkl", required=True)
     parser.add_argument("--base_checkpoint", required=True)
+    parser.add_argument("--joint_teacher_checkpoint")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=12)
@@ -458,6 +527,12 @@ def parse_args():
     parser.add_argument("--safety_weight", type=float, default=0.5)
     parser.add_argument("--safety_margin", type=float, default=0.0)
     parser.add_argument("--stability_weight", type=float, default=0.1)
+    parser.add_argument("--joint_distill_weight", type=float, default=0.0)
+    parser.add_argument("--joint_distill_temperature", type=float, default=2.0)
+    parser.add_argument("--joint_teacher_correct_only", action="store_true")
+    parser.add_argument("--joint_teacher_better_only", action="store_true")
+    parser.add_argument("--joint_teacher_advantage_margin", type=float, default=0.0)
+    parser.add_argument("--joint_teacher_confidence", type=float, default=0.0)
     parser.add_argument("--prototype_weight", type=float, default=0.1)
     parser.add_argument("--residual_weight", type=float, default=1e-3)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
