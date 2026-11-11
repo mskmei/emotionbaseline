@@ -144,7 +144,7 @@ def report(best: Sequence[Mapping], min_seeds: int) -> str:
         "# Proposal 2: source-anchored single-checkpoint adapter",
         "",
         f"Only groups with n >= {min_seeds} and positive mean Source/eJSL deltas are eligible.",
-        "Checkpoint selection uses the source metric; eJSL is evaluation only.",
+        "Epoch/checkpoint selection uses only the source metric. This exploratory stage uses eJSL for profile ranking.",
         "",
         "| corpus | backbone | BOBSL | profile | n | source-only -> ours | eJSL base -> ours | delta S/E | strict seeds |",
         "|---|---|---|---|---:|---:|---:|---:|---:|",

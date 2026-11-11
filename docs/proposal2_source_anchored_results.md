@@ -15,9 +15,12 @@ BOBSL classification and prototype losses inject transferable visual emotion
 information. CMERC additionally uses a local head to train on length-one BOBSL
 samples without pretending that BOBSL has dialogue context.
 
-Only the source metric selects `model_best.pt`; eJSL is evaluation-only. The
-final checkpoint contains the frozen backbone and its adapter. Inference uses
-one checkpoint, with no routing, ensemble, or test-time checkpoint selection.
+Only the source metric selects `model_best.pt`; eJSL does not select epochs or
+checkpoints. This exploratory stage does use eJSL to rank hyperparameter
+profiles. A confirmatory paper result should lock these profiles before using a
+new held-out evaluation. The final checkpoint contains the frozen backbone and
+its adapter. Inference uses one checkpoint, with no routing, ensemble, or
+test-time checkpoint selection.
 
 ## Canonical B5K Result
 
