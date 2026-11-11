@@ -11,7 +11,7 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 BASE_MODE=${BASE_MODE:-source_only}
 SEEDS=${SEEDS:-42}
-PROFILES=${PROFILES:-"context_r3 context_r1 proto10_r3 safe_r3 source2_r3 low_lr very_low_lr rank1_low rank1_safe b25_low source4_r3 scale05_r3 scale1_r3 no_weight"}
+PROFILES=${PROFILES:-"context_r3 context_r1 proto10_r3 safe_r3 source2_r3 low_lr very_low_lr rank1_low rank1_safe b25_low source4_r3 scale05_r3 scale1_r3 no_weight weight25 weight50 weight75 no_weight_safe no_weight_kl5 no_weight_rank1"}
 EPOCHS=${EPOCHS:-12}
 RESUME_DONE=${RESUME_DONE:-1}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/ecerc_sast/screen}
@@ -61,6 +61,12 @@ profile_args() {
     scale05_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 0.5 --lr 0.0002 --prototype_weight 0.1) ;;
     scale1_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 1.0 --lr 0.0002 --prototype_weight 0.1) ;;
     no_weight) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --no-class_weight) ;;
+    weight25) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --class_weight_power 0.25) ;;
+    weight50) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --class_weight_power 0.50) ;;
+    weight75) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --class_weight_power 0.75) ;;
+    no_weight_safe) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --residual_scale 1.0 --source_weight 2.0 --bobsl_weight 0.25 --safety_weight 2.0 --stability_weight 1.0 --prototype_weight 0.1 --residual_weight 0.005 --no-class_weight) ;;
+    no_weight_kl5) PROFILE_ARGS=(--subspace_rank 3 --lr 0.00005 --residual_scale 0.5 --source_weight 4.0 --bobsl_weight 0.1 --safety_weight 4.0 --stability_weight 5.0 --prototype_weight 0.1 --residual_weight 0.01 --no-class_weight) ;;
+    no_weight_rank1) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0002 --residual_scale 1.0 --source_weight 2.0 --bobsl_weight 0.25 --safety_weight 2.0 --stability_weight 1.0 --prototype_weight 0.0 --residual_weight 0.005 --no-class_weight) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
 }

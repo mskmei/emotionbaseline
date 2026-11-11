@@ -317,6 +317,9 @@ def train(args) -> None:
     external_test_loader = make_loader(external_test, args.eval_batch_size, False, args.seed)
     source_labels = [int(label) for key in source_keys for label in payload["emotion_labels"][key] if int(label) >= 0]
     weights = base.make_class_weights(source_labels, len(ANJS_LABELS), device) if args.class_weight else None
+    if weights is not None and args.class_weight_power != 1.0:
+        weights = weights.pow(args.class_weight_power)
+        weights = weights / weights.mean().clamp_min(1e-8)
     optimizer = torch.optim.AdamW(adapter_parameters(model), lr=args.lr, weight_decay=args.weight_decay)
 
     base_source = evaluate(model, source_test_loader, device, adapted=False)
@@ -428,6 +431,12 @@ def parse_args():
     parser.add_argument("--residual_weight", type=float, default=1e-3)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--class_weight", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--class_weight_power",
+        type=float,
+        default=1.0,
+        help="Exponent for smoothly interpolating between uniform (0) and inverse-frequency (1) weights.",
+    )
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1"], default="weighted_f1")
     parser.add_argument("--base_layer", type=int, default=1)
     parser.add_argument("--hidden_size", type=int, default=128)
