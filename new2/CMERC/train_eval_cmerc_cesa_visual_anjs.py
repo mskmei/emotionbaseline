@@ -190,7 +190,8 @@ def train_adapter_epoch(
     model.local_head.train()
     bobsl_iter = cycle(bobsl_loader)
     totals: Dict[str, float] = {
-        key: 0.0 for key in ("loss", "source", "bobsl", "bobsl_context", "local", "safety", "residual")
+        key: 0.0
+        for key in ("loss", "source", "bobsl", "bobsl_context", "local", "safety", "stability", "residual")
     }
     steps = 0
     for source_data in source_loader:
@@ -207,6 +208,11 @@ def train_adapter_epoch(
         base_nll = weighted_nll(base_log_prob[source_valid], source_targets, weights, reduction="none")
         source_loss = source_nll.mean()
         safety_loss = F.relu(source_nll - base_nll + args.safety_margin).mean()
+        stability_loss = F.kl_div(
+            adapted_log_prob[source_valid],
+            base_log_prob[source_valid].exp(),
+            reduction="batchmean",
+        )
         source_adapted_flat = flatten_seq_first(adapted_visual, lengths)[source_valid]
         source_local = weighted_nll(model.local_log_prob(source_adapted_flat), source_targets, weights)
         source_delta_flat = flatten_seq_first(source_delta, lengths)[source_valid]
@@ -251,6 +257,7 @@ def train_adapter_epoch(
             + args.bobsl_context_weight * bobsl_context_loss
             + args.local_source_weight * source_local
             + args.safety_weight * safety_loss
+            + args.stability_weight * stability_loss
             + args.residual_weight * residual_loss
         )
         loss.backward()
@@ -265,6 +272,7 @@ def train_adapter_epoch(
             "bobsl_context": bobsl_context_loss,
             "local": source_local,
             "safety": safety_loss,
+            "stability": stability_loss,
             "residual": residual_loss,
         }
         for key, value in values.items():
@@ -477,6 +485,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--local_source_weight", type=float, default=0.25)
     parser.add_argument("--safety_weight", type=float, default=1.0)
     parser.add_argument("--safety_margin", type=float, default=0.0)
+    parser.add_argument(
+        "--stability_weight",
+        type=float,
+        default=0.0,
+        help="KL weight that keeps source predictions close to the frozen source-only anchor.",
+    )
     parser.add_argument("--residual_weight", type=float, default=0.01)
     parser.add_argument("--class_weight", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)

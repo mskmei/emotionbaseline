@@ -9,7 +9,7 @@ export CUDA_VISIBLE_DEVICES="$GPU"
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
 BOBSL_K=${BOBSL_K:-5}
-PROFILES=${PROFILES:-"conservative balanced open fullspace nosafety lowbobsl rank1_open rank1_safe very_low_lr high_lr source2 source4 bobsl2 scale05 scale4"}
+PROFILES=${PROFILES:-"conservative balanced open open_kl1 open_kl5 fullspace fullspace_kl1 nosafety lowbobsl rank1_open rank1_safe very_low_lr high_lr source2 source4 bobsl2 scale05 scale4"}
 BASE_MODE=${BASE_MODE:-source_only}
 SEEDS=${SEEDS:-${SEED:-42}}
 EPOCHS=${EPOCHS:-20}
@@ -27,8 +27,17 @@ profile_args() {
     open)
       PROFILE_ARGS=(--lr 0.0005 --residual_scale 2.0 --bobsl_weight 1.0 --local_source_weight 0.1 --safety_weight 0.5 --residual_weight 0.001)
       ;;
+    open_kl1)
+      PROFILE_ARGS=(--lr 0.0005 --residual_scale 2.0 --bobsl_weight 1.0 --local_source_weight 0.1 --safety_weight 0.5 --stability_weight 1.0 --residual_weight 0.001)
+      ;;
+    open_kl5)
+      PROFILE_ARGS=(--lr 0.0005 --residual_scale 2.0 --bobsl_weight 1.0 --local_source_weight 0.1 --safety_weight 0.5 --stability_weight 5.0 --residual_weight 0.001)
+      ;;
     fullspace)
       PROFILE_ARGS=(--lr 0.0001 --projection full --residual_scale 0.25 --bobsl_weight 0.5 --safety_weight 2.0 --residual_weight 0.02)
+      ;;
+    fullspace_kl1)
+      PROFILE_ARGS=(--lr 0.0001 --projection full --residual_scale 0.25 --bobsl_weight 0.5 --safety_weight 2.0 --stability_weight 1.0 --residual_weight 0.02)
       ;;
     nosafety)
       PROFILE_ARGS=(--lr 0.0003 --residual_scale 1.0 --bobsl_weight 1.0 --safety_weight 0.0 --residual_weight 0.01)
