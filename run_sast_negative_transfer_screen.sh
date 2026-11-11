@@ -106,11 +106,13 @@ profile_args() {
     scale05_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 0.5 --lr 0.0002 --prototype_weight 0.1) ;;
     scale1_r3) PROFILE_ARGS=(--subspace_rank 3 --residual_scale 1.0 --lr 0.0002 --prototype_weight 0.1) ;;
     no_weight) PROFILE_ARGS=(--subspace_rank 3 --prototype_weight 0.1 --no-class_weight) ;;
+    dual_all_w01) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.1) ;;
     dual_all_w025) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.25) ;;
     dual_all_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5) ;;
     dual_all_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0) ;;
     dual_all_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0) ;;
     dual_better_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5 --joint_teacher_better_only) ;;
+    dual_better_w01) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.1 --joint_teacher_better_only) ;;
     dual_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     dual_better_w2) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 2.0 --joint_teacher_better_only) ;;
     dual_correct_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5 --joint_teacher_correct_only) ;;
@@ -121,6 +123,10 @@ profile_args() {
     dual_rank1_better_w1) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     dual_soft_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_distill_temperature 4.0 --joint_teacher_better_only) ;;
     dual_safe_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --residual_scale 1.0 --bobsl_weight 0.5 --safety_weight 1.0 --stability_weight 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    dual_full_safe_w05) PROFILE_ARGS=(--projection full --lr 0.0001 --residual_scale 1.0 --bobsl_weight 0.5 --safety_weight 1.0 --stability_weight 0.5 --joint_distill_weight 0.5 --joint_teacher_better_only) ;;
+    dual_full_safe_w1) PROFILE_ARGS=(--projection full --lr 0.0001 --residual_scale 1.0 --bobsl_weight 0.5 --safety_weight 1.0 --stability_weight 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    dual_no_weight_w05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 0.5 --joint_teacher_better_only --no-class_weight) ;;
+    dual_no_weight_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only --no-class_weight) ;;
     dual_open_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0002 --residual_scale 4.0 --safety_weight 0.25 --stability_weight 0.05 --prototype_weight 0.1 --residual_weight 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac
