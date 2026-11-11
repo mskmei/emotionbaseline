@@ -9,12 +9,12 @@ GPU=${GPU:-0}
 CORPORA=${CORPORA:-"MELD IEMOCAP"}
 BOBSL_K=${BOBSL_K:-5}
 SEEDS=${SEEDS:-42}
-EPOCHS=${EPOCHS:-20}
+EPOCHS=${EPOCHS:-}
 RESUME_DONE=${RESUME_DONE:-1}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/proposal2_source_anchor}
 PYTHON_BIN=${PYTHON_BIN:-/home/lr/maokeyu/.conda/envs/telme39/bin/python}
 
-echo "[PROPOSAL2] baseline=$BASELINE corpora=$CORPORA bobsl=${BOBSL_K}k seeds=$SEEDS gpu=$GPU"
+echo "[PROPOSAL2] baseline=$BASELINE corpora=$CORPORA bobsl=${BOBSL_K}k seeds=$SEEDS gpu=$GPU epochs=${EPOCHS:-baseline-default}"
 echo "[PROPOSAL2] one final checkpoint = frozen source-only backbone + source-anchored adapter"
 
 case "$BASELINE" in
@@ -52,4 +52,3 @@ case "$BASELINE" in
     exit 2
     ;;
 esac
-
