@@ -381,6 +381,9 @@ def train(args) -> None:
         base.make_class_weights(source_labels, int(info["n_classes"]), device)
         if args.class_weight else None
     )
+    if weights is not None and args.class_weight_power != 1.0:
+        weights = weights.pow(args.class_weight_power)
+        weights = weights / weights.mean().clamp_min(1e-8)
     optimizer = torch.optim.AdamW(adapter_parameters(model), lr=args.lr, weight_decay=args.weight_decay)
 
     base_source = evaluate(model, source_test_loader, device, adapted=False)
@@ -460,6 +463,7 @@ def train(args) -> None:
         "external_test_pkl": str(external_pkl),
         "base_checkpoint": str(checkpoint_path),
         "joint_teacher_checkpoint": str(joint_checkpoint_path) if joint_checkpoint_path else "",
+        "anchor_name": args.anchor_name,
         "basis_meta": basis_meta,
         "best_epoch": best_epoch,
         "base_source_weighted_f1": base_source["weighted_f1"],
@@ -507,6 +511,7 @@ def parse_args():
     parser.add_argument("--external_test_pkl", required=True)
     parser.add_argument("--base_checkpoint", required=True)
     parser.add_argument("--joint_teacher_checkpoint")
+    parser.add_argument("--anchor_name", choices=["source_only", "plain_joint"], default="source_only")
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=12)
@@ -535,6 +540,7 @@ def parse_args():
     parser.add_argument("--residual_weight", type=float, default=1e-3)
     parser.add_argument("--max_grad_norm", type=float, default=5.0)
     parser.add_argument("--class_weight", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--class_weight_power", type=float, default=1.0)
     parser.add_argument("--selection_metric", choices=["weighted_f1", "macro_f1"], default="weighted_f1")
     parser.add_argument("--oracle_source_tolerance", type=float, default=0.0)
     parser.add_argument("--no_cuda", action="store_true")

@@ -45,10 +45,17 @@ def main() -> None:
         baseline = next((part.upper() for part in parts if part.upper() in {"MMGCN", "MAGTKD"}), "UNKNOWN")
         corpus = next((part.upper() for part in parts if part.lower() in {"meld", "iemocap"}), "UNKNOWN")
         bobsl_size = next((part.lower() for part in parts if re.fullmatch(r"b\d+k", part.lower())), "unknown")
-        source_only_source = float(data["base_source"])
-        source_only_external = float(data["base_external"])
-        plain_joint_source = float(data["joint_source"])
-        plain_joint_external = float(data["joint_external"])
+        anchor_name = data.get("anchor_name", "source_only")
+        if anchor_name == "plain_joint":
+            source_only_source = float(data["joint_source"])
+            source_only_external = float(data["joint_external"])
+            plain_joint_source = float(data["base_source"])
+            plain_joint_external = float(data["base_external"])
+        else:
+            source_only_source = float(data["base_source"])
+            source_only_external = float(data["base_external"])
+            plain_joint_source = float(data["joint_source"])
+            plain_joint_external = float(data["joint_external"])
         ours_source = float(data["best_source"])
         ours_external = float(data["best_external"])
         source_threshold = max(source_only_source, plain_joint_source)
@@ -59,6 +66,7 @@ def main() -> None:
             "bobsl_size": bobsl_size,
             "profile": match.group(1),
             "seed": int(match.group(2)),
+            "anchor_name": anchor_name,
             "source_only_source": source_only_source,
             "source_only_external": source_only_external,
             "plain_joint_source": plain_joint_source,
@@ -80,7 +88,7 @@ def main() -> None:
 
     grouped = {}
     for row in seed_rows:
-        key = (row["baseline"], row["corpus"], row["bobsl_size"], row["profile"])
+        key = (row["baseline"], row["corpus"], row["bobsl_size"], row["anchor_name"], row["profile"])
         grouped.setdefault(key, []).append(row)
     group_rows = []
     metrics = [
@@ -89,11 +97,12 @@ def main() -> None:
         "delta_plain_joint_source", "delta_plain_joint_external", "hard_source_margin",
         "hard_external_margin", "hard_min_margin",
     ]
-    for (baseline, corpus, bobsl_size, profile), rows in grouped.items():
+    for (baseline, corpus, bobsl_size, anchor_name, profile), rows in grouped.items():
         result = {
             "baseline": baseline,
             "corpus": corpus,
             "bobsl_size": bobsl_size,
+            "anchor_name": anchor_name,
             "profile": profile,
             "n": len(rows),
             "seeds": " ".join(str(row["seed"]) for row in sorted(rows, key=lambda item: item["seed"])),
@@ -126,7 +135,8 @@ def main() -> None:
             writer.writerows(seed_rows)
     for row in group_rows:
         print(
-            f"[DUAL-SUMMARY] {row['baseline']}/{row['corpus']}/{row['bobsl_size']}/{row['profile']} "
+            f"[DUAL-SUMMARY] {row['baseline']}/{row['corpus']}/{row['bobsl_size']}/"
+            f"{row['anchor_name']}/{row['profile']} "
             f"n={row['n']} ours={row['ours_source']:.4f}/{row['ours_external']:.4f} "
             f"vs_source={row['delta_source_only_source']:+.4f}/{row['delta_source_only_external']:+.4f} "
             f"vs_joint={row['delta_plain_joint_source']:+.4f}/{row['delta_plain_joint_external']:+.4f} "
