@@ -18,6 +18,8 @@ PROFILES=${PROFILES:-"context_r3 context_r1 proto10_r3 proto50_r3 safe_r3 open_r
 EPOCHS=${EPOCHS:-12}
 RESUME_DONE=${RESUME_DONE:-1}
 WORK_ROOT=${WORK_ROOT:-/raid_zoe/home/lr/maokeyu/sign/sast_negative_transfer}
+BASE_CHECKPOINT_TEMPLATE=${BASE_CHECKPOINT_TEMPLATE:-}
+PEER_CHECKPOINT_TEMPLATE=${PEER_CHECKPOINT_TEMPLATE:-}
 
 case "$BASELINE" in
   MMGCN)
@@ -61,6 +63,10 @@ set_paths() {
 }
 
 checkpoint_for_seed() {
+  if [[ -n "$BASE_CHECKPOINT_TEMPLATE" ]]; then
+    printf '%s\n' "${BASE_CHECKPOINT_TEMPLATE//\{seed\}/$1}"
+    return
+  fi
   if [[ "$BASE_MODE" == plain_joint ]]; then
     if [[ "$BASELINE" == MMGCN ]]; then
       printf '%s/joint_b%sk_seed%s/video/model_best.pt\n' "$BASE_ROOT" "$BOBSL_K" "$1"
@@ -81,6 +87,10 @@ checkpoint_for_seed() {
 }
 
 joint_checkpoint_for_seed() {
+  if [[ -n "$PEER_CHECKPOINT_TEMPLATE" ]]; then
+    printf '%s\n' "${PEER_CHECKPOINT_TEMPLATE//\{seed\}/$1}"
+    return
+  fi
   local peer_mode="$PEER_MODE"
   if [[ "$peer_mode" == opposite ]]; then
     if [[ "$BASE_MODE" == source_only ]]; then peer_mode=plain_joint; else peer_mode=source_only; fi
