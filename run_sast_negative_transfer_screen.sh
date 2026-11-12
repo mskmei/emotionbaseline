@@ -214,6 +214,16 @@ profile_args() {
     mix_a25_p50) PROFILE_ARGS=(--backbone_mix_alpha 0.25 --subspace_rank 3 --lr 0.0001 --class_weight_power 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     mix_a50_p50) PROFILE_ARGS=(--backbone_mix_alpha 0.5 --subspace_rank 3 --lr 0.0001 --class_weight_power 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     mix_a75_p50) PROFILE_ARGS=(--backbone_mix_alpha 0.75 --subspace_rank 3 --lr 0.0001 --class_weight_power 0.5 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
+    bridge_rank1_b01) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --peer_bobsl_distill_weight 0.1 --joint_teacher_better_only) ;;
+    bridge_rank1_b025) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --peer_bobsl_distill_weight 0.25 --joint_teacher_better_only) ;;
+    bridge_rank1_b05) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --peer_bobsl_distill_weight 0.5 --joint_teacher_better_only) ;;
+    bridge_rank1_b1) PROFILE_ARGS=(--subspace_rank 1 --lr 0.0001 --prototype_weight 0.0 --peer_bobsl_distill_weight 1.0 --joint_teacher_better_only) ;;
+    bridge_decision_b01) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --peer_bobsl_distill_weight 0.1 --joint_teacher_better_only) ;;
+    bridge_decision_b025) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --peer_bobsl_distill_weight 0.25 --joint_teacher_better_only) ;;
+    bridge_decision_b05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --peer_bobsl_distill_weight 0.5 --joint_teacher_better_only) ;;
+    bridge_decision_b1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --peer_bobsl_distill_weight 1.0 --joint_teacher_better_only) ;;
+    bridge_dual_s025_b025) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --joint_distill_weight 0.25 --peer_bobsl_distill_weight 0.25 --joint_teacher_better_only) ;;
+    bridge_dual_s05_b05) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0001 --no-class_weight --decision_residual --decision_residual_scale 0.1 --joint_distill_weight 0.5 --peer_bobsl_distill_weight 0.5 --joint_teacher_better_only) ;;
     dual_open_better_w1) PROFILE_ARGS=(--subspace_rank 3 --lr 0.0002 --residual_scale 4.0 --safety_weight 0.25 --stability_weight 0.05 --prototype_weight 0.1 --residual_weight 0.0001 --joint_distill_weight 1.0 --joint_teacher_better_only) ;;
     *) echo "Unknown profile=$1" >&2; return 2 ;;
   esac

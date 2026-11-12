@@ -250,7 +250,9 @@ def train_epoch(
     bobsl_iter = cycle(bobsl_loader)
     totals = {
         key: 0.0
-        for key in ("loss", "source", "bobsl", "safety", "stability", "joint", "prototype", "residual")
+        for key in (
+            "loss", "source", "bobsl", "safety", "stability", "joint", "peer_bobsl", "prototype", "residual"
+        )
     }
     steps = 0
     for source_data in source_loader:
@@ -287,6 +289,20 @@ def train_epoch(
         )
         bobsl_targets = b_labels[b_valid]
         bobsl_loss = weighted_nll(bobsl_log_prob[b_valid], bobsl_targets, weights)
+        if joint_teacher is not None and args.peer_bobsl_distill_weight > 0:
+            with torch.no_grad():
+                bobsl_base_log_prob, _ = model(
+                    b_text, b_visual, b_audio, b_qmask, b_umask, b_lengths, adapted=False
+                )
+                bobsl_teacher_log_prob, _ = joint_teacher(
+                    b_text, b_visual, b_audio, b_qmask, b_umask, b_lengths, adapted=False
+                )
+            peer_bobsl_loss = joint_teacher_loss(
+                bobsl_log_prob[b_valid], bobsl_teacher_log_prob[b_valid],
+                bobsl_base_log_prob[b_valid], bobsl_targets, args
+            )
+        else:
+            peer_bobsl_loss = bobsl_loss.new_zeros(())
         bobsl_features = flatten_seq(b_visual + bobsl_delta, b_lengths)[b_valid]
         prototype_loss = prototype_alignment_loss(
             bobsl_features, bobsl_targets, basis, centers, coordinate_mean, coordinate_scale
@@ -300,6 +316,7 @@ def train_epoch(
             + args.safety_weight * safety_loss
             + args.stability_weight * stability_loss
             + args.joint_distill_weight * joint_loss
+            + args.peer_bobsl_distill_weight * peer_bobsl_loss
             + args.prototype_weight * prototype_loss
             + args.residual_weight * residual_loss
         )
@@ -314,6 +331,7 @@ def train_epoch(
             "safety": safety_loss,
             "stability": stability_loss,
             "joint": joint_loss,
+            "peer_bobsl": peer_bobsl_loss,
             "prototype": prototype_loss,
             "residual": residual_loss,
         }
@@ -571,6 +589,7 @@ def parse_args():
     parser.add_argument("--safety_margin", type=float, default=0.0)
     parser.add_argument("--stability_weight", type=float, default=0.1)
     parser.add_argument("--joint_distill_weight", type=float, default=0.0)
+    parser.add_argument("--peer_bobsl_distill_weight", type=float, default=0.0)
     parser.add_argument("--joint_distill_temperature", type=float, default=2.0)
     parser.add_argument("--joint_teacher_correct_only", action="store_true")
     parser.add_argument("--joint_teacher_better_only", action="store_true")
