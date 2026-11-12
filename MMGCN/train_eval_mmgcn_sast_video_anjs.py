@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPO_ROOT / "new"))
 import train_eval_mmgcn_unified as base  # noqa: E402
 from cesa import (  # noqa: E402
     ContextDecoupledEmotionSubspaceAdapter,
+    EmotionDecisionResidualAdapter,
     compute_emotion_subspace,
     compute_projection_statistics,
     prototype_alignment_loss,
@@ -82,6 +83,16 @@ class SASTMMGCN(nn.Module):
             residual_scale=args.residual_scale,
             projection=args.projection,
         )
+        self.decision_adapter = (
+            EmotionDecisionResidualAdapter(
+                visual_dim,
+                args.n_classes,
+                bottleneck_dim=args.decision_adapter_dim,
+                dropout=args.adapter_dropout,
+                residual_scale=args.decision_residual_scale,
+            )
+            if args.decision_residual else None
+        )
 
     def forward(self, text, visual, audio, qmask, umask, lengths, adapted: bool):
         text = torch.zeros_like(text)
@@ -91,6 +102,9 @@ class SASTMMGCN(nn.Module):
         else:
             delta = torch.zeros_like(visual)
         log_prob, *_ = self.backbone(text, qmask.clone(), umask, lengths, audio, visual)
+        if adapted and self.decision_adapter is not None:
+            decision_delta = flatten_seq(self.decision_adapter(visual), lengths)
+            log_prob = F.log_softmax(log_prob + decision_delta, dim=-1)
         return log_prob, delta
 
 
@@ -185,6 +199,8 @@ def weighted_nll(log_prob, labels, weights, reduction="mean"):
 
 def adapter_parameters(model: SASTMMGCN) -> Iterable[nn.Parameter]:
     yield from model.adapter.parameters()
+    if model.decision_adapter is not None:
+        yield from model.decision_adapter.parameters()
 
 
 def joint_teacher_loss(
@@ -337,6 +353,7 @@ def train(args) -> None:
     out_dir = base.resolve_path(args.out_dir, must_exist=False)
     out_dir.mkdir(parents=True, exist_ok=True)
     info = base.inspect_feature_pkl(train_pkl)
+    args.n_classes = int(info["n_classes"])
     payload = base.load_feature_tuple(train_pkl)
     labels_by_key, visual_by_key, train_keys = payload[2], payload[5], list(payload[7])
     source_keys = [key for key in train_keys if not is_bobsl_key(key)]
@@ -520,6 +537,9 @@ def parse_args():
     parser.add_argument("--eval_batch_size", type=int, default=8)
     parser.add_argument("--adapter_dim", type=int, default=128)
     parser.add_argument("--adapter_dropout", type=float, default=0.2)
+    parser.add_argument("--decision_residual", action="store_true")
+    parser.add_argument("--decision_adapter_dim", type=int, default=64)
+    parser.add_argument("--decision_residual_scale", type=float, default=1.0)
     parser.add_argument("--subspace_rank", type=int, default=3)
     parser.add_argument("--projection", choices=["emotion", "full"], default="emotion")
     parser.add_argument("--residual_scale", type=float, default=2.0)

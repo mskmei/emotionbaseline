@@ -26,6 +26,7 @@ import train_eval_magtkd_video_anjs as base  # noqa: E402
 from anjs_video_common import ANJS_LABELS  # noqa: E402
 from cesa import (  # noqa: E402
     ContextDecoupledEmotionSubspaceAdapter,
+    EmotionDecisionResidualAdapter,
     compute_emotion_subspace,
     compute_projection_statistics,
     prototype_alignment_loss,
@@ -82,6 +83,16 @@ class SASTMAGTKD(nn.Module):
             residual_scale=args.residual_scale,
             projection=args.projection,
         )
+        self.decision_adapter = (
+            EmotionDecisionResidualAdapter(
+                visual_dim,
+                len(ANJS_LABELS),
+                bottleneck_dim=args.decision_adapter_dim,
+                dropout=args.adapter_dropout,
+                residual_scale=args.decision_residual_scale,
+            )
+            if args.decision_residual else None
+        )
 
     def forward(self, text, audio_kd, video_kd, qmask, umask, lengths, adapted: bool):
         text = torch.zeros_like(text)
@@ -93,6 +104,9 @@ class SASTMAGTKD(nn.Module):
         _, _, video_logits, *_ = self.backbone(
             text, audio_kd, video_kd, umask, qmask.clone(), lengths
         )
+        if adapted and self.decision_adapter is not None:
+            decision_delta = self.decision_adapter(video_kd).permute(1, 0, 2)
+            video_logits = video_logits + decision_delta
         return video_logits, delta
 
 
@@ -185,6 +199,8 @@ def weighted_ce(logits, labels, weights, reduction="mean"):
 
 def adapter_parameters(model: SASTMAGTKD) -> Iterable[nn.Parameter]:
     yield from model.adapter.parameters()
+    if model.decision_adapter is not None:
+        yield from model.decision_adapter.parameters()
 
 
 def joint_teacher_loss(
@@ -522,6 +538,9 @@ def parse_args():
     parser.add_argument("--eval_batch_size", type=int, default=32)
     parser.add_argument("--adapter_dim", type=int, default=128)
     parser.add_argument("--adapter_dropout", type=float, default=0.2)
+    parser.add_argument("--decision_residual", action="store_true")
+    parser.add_argument("--decision_adapter_dim", type=int, default=64)
+    parser.add_argument("--decision_residual_scale", type=float, default=1.0)
     parser.add_argument("--subspace_rank", type=int, default=3)
     parser.add_argument("--projection", choices=["emotion", "full"], default="emotion")
     parser.add_argument("--residual_scale", type=float, default=2.0)

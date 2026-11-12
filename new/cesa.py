@@ -124,3 +124,29 @@ class ContextDecoupledEmotionSubspaceAdapter(nn.Module):
             delta = raw
         delta = self.residual_scale * delta
         return visual + delta, delta
+
+
+class EmotionDecisionResidualAdapter(nn.Module):
+    """Zero-initialized visual residual in the shared emotion-logit space."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        n_classes: int,
+        bottleneck_dim: int = 64,
+        dropout: float = 0.1,
+        residual_scale: float = 1.0,
+    ):
+        super().__init__()
+        self.residual_scale = float(residual_scale)
+        self.norm = nn.LayerNorm(input_dim)
+        self.down = nn.Linear(input_dim, bottleneck_dim)
+        self.activation = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+        self.up = nn.Linear(bottleneck_dim, n_classes)
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, visual: torch.Tensor) -> torch.Tensor:
+        hidden = self.dropout(self.activation(self.down(self.norm(visual))))
+        return self.residual_scale * torch.tanh(self.up(hidden))
