@@ -28,6 +28,7 @@ from cesa import (  # noqa: E402
     EmotionDecisionResidualAdapter,
     compute_emotion_subspace,
     compute_projection_statistics,
+    interpolate_module_state_,
     prototype_alignment_loss,
 )
 from dataloader import MELDDataset  # noqa: E402
@@ -407,16 +408,22 @@ def train(args) -> None:
     base_external = evaluate(model, external_test_loader, device, adapted=False)
     joint_source = evaluate(joint_teacher, source_test_loader, device, adapted=False) if joint_teacher else None
     joint_external = evaluate(joint_teacher, external_test_loader, device, adapted=False) if joint_teacher else None
-    best_source = copy.deepcopy(base_source)
-    best_external = copy.deepcopy(base_external)
+    if args.backbone_mix_alpha > 0:
+        if joint_teacher is None:
+            raise ValueError("--backbone_mix_alpha requires --joint_teacher_checkpoint")
+        interpolate_module_state_(model.backbone, joint_teacher.backbone, args.backbone_mix_alpha)
+    anchor_source = evaluate(model, source_test_loader, device, adapted=False)
+    anchor_external = evaluate(model, external_test_loader, device, adapted=False)
+    best_source = copy.deepcopy(anchor_source)
+    best_external = copy.deepcopy(anchor_external)
     best_state = copy.deepcopy(model.state_dict())
     best_epoch = 0
-    best_score = float(base_source[args.selection_metric])
-    oracle_source = copy.deepcopy(base_source)
-    oracle_external = copy.deepcopy(base_external)
+    best_score = float(anchor_source[args.selection_metric])
+    oracle_source = copy.deepcopy(anchor_source)
+    oracle_external = copy.deepcopy(anchor_external)
     oracle_state = copy.deepcopy(best_state)
     oracle_epoch = 0
-    oracle_score = float(base_external["weighted_f1"])
+    oracle_score = float(anchor_external["weighted_f1"])
     rows: List[Dict] = []
     trainable = sum(parameter.numel() for parameter in adapter_parameters(model))
     print(f"[SAST-MMGCN] source={len(source_train)} bobsl={len(bobsl_train)} graph={graph_type}/{modals}")
@@ -425,6 +432,11 @@ def train(args) -> None:
         print(
             f"[SAST-MMGCN] joint teacher source={joint_source['weighted_f1']:.4f} "
             f"external={joint_external['weighted_f1']:.4f}"
+        )
+    if args.backbone_mix_alpha > 0:
+        print(
+            f"[SAST-MMGCN] mixed anchor alpha={args.backbone_mix_alpha:.3f} "
+            f"source={anchor_source['weighted_f1']:.4f} external={anchor_external['weighted_f1']:.4f}"
         )
     print(f"[SAST-MMGCN] basis={json.dumps(basis_meta)} trainable={trainable}")
 
@@ -444,7 +456,7 @@ def train(args) -> None:
             best_external = copy.deepcopy(external_result)
             best_state = copy.deepcopy(model.state_dict())
         if (
-            source_result["weighted_f1"] >= base_source["weighted_f1"] - args.oracle_source_tolerance
+            source_result["weighted_f1"] >= anchor_source["weighted_f1"] - args.oracle_source_tolerance
             and external_result["weighted_f1"] > oracle_score
         ):
             oracle_score = float(external_result["weighted_f1"])
@@ -481,6 +493,9 @@ def train(args) -> None:
         "base_checkpoint": str(checkpoint_path),
         "joint_teacher_checkpoint": str(joint_checkpoint_path) if joint_checkpoint_path else "",
         "anchor_name": args.anchor_name,
+        "backbone_mix_alpha": args.backbone_mix_alpha,
+        "anchor_source_weighted_f1": anchor_source["weighted_f1"],
+        "anchor_external_weighted_f1": anchor_external["weighted_f1"],
         "basis_meta": basis_meta,
         "best_epoch": best_epoch,
         "base_source_weighted_f1": base_source["weighted_f1"],
@@ -492,6 +507,8 @@ def train(args) -> None:
     if joint_source is not None:
         base.save_report(joint_source, out_dir, "source_test_joint", label_names, {**common, "selection": "joint_teacher"})
         base.save_report(joint_external, out_dir, "external_test_joint", label_names, {**common, "selection": "joint_teacher"})
+    base.save_report(anchor_source, out_dir, "source_test_anchor", label_names, {**common, "selection": "mixed_anchor"})
+    base.save_report(anchor_external, out_dir, "external_test_anchor", label_names, {**common, "selection": "mixed_anchor"})
     base.save_report(best_source, out_dir, "source_test_best", label_names, {**common, "selection": "source"})
     base.save_report(best_external, out_dir, "external_test_best", label_names, {**common, "selection": "source"})
     base.save_report(oracle_source, out_dir, "source_test_oracle", label_names, {**common, "selection": "diagnostic_oracle", "oracle_epoch": oracle_epoch})
@@ -506,6 +523,8 @@ def train(args) -> None:
         "base_external": base_external["weighted_f1"],
         "joint_source": joint_source["weighted_f1"] if joint_source else None,
         "joint_external": joint_external["weighted_f1"] if joint_external else None,
+        "anchor_source": anchor_source["weighted_f1"],
+        "anchor_external": anchor_external["weighted_f1"],
         "best_source": best_source["weighted_f1"],
         "best_external": best_external["weighted_f1"],
         "delta_source": best_source["weighted_f1"] - base_source["weighted_f1"],
@@ -529,6 +548,7 @@ def parse_args():
     parser.add_argument("--base_checkpoint", required=True)
     parser.add_argument("--joint_teacher_checkpoint")
     parser.add_argument("--anchor_name", choices=["source_only", "plain_joint"], default="source_only")
+    parser.add_argument("--backbone_mix_alpha", type=float, default=0.0)
     parser.add_argument("--out_dir", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--epochs", type=int, default=12)

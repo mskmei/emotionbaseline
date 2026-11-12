@@ -7,6 +7,30 @@ import torch
 import torch.nn as nn
 
 
+@torch.no_grad()
+def interpolate_module_state_(target: nn.Module, peer: nn.Module, alpha: float) -> None:
+    """Interpolate compatible floating-point state into one deployable module."""
+    alpha = float(alpha)
+    if not 0.0 <= alpha <= 1.0:
+        raise ValueError(f"Expected interpolation alpha in [0, 1], got {alpha}")
+    if alpha == 0.0:
+        return
+    target_state = target.state_dict()
+    peer_state = peer.state_dict()
+    if target_state.keys() != peer_state.keys():
+        missing = sorted(target_state.keys() - peer_state.keys())[:10]
+        unexpected = sorted(peer_state.keys() - target_state.keys())[:10]
+        raise ValueError(f"Cannot interpolate incompatible modules: missing={missing} unexpected={unexpected}")
+    mixed = {}
+    for key, value in target_state.items():
+        other = peer_state[key].to(device=value.device)
+        if value.is_floating_point():
+            mixed[key] = value.mul(1.0 - alpha).add(other.to(dtype=value.dtype), alpha=alpha)
+        else:
+            mixed[key] = value
+    target.load_state_dict(mixed, strict=True)
+
+
 def compute_emotion_subspace(
     features: Mapping[str, Sequence],
     labels: Mapping[str, Sequence[int]],
