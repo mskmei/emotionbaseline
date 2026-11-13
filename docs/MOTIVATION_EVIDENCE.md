@@ -285,6 +285,9 @@ The experiment sequence is internally consistent:
    plug-in module family. It beats both source-only and plain joint on both
    metrics in 7/10 cases, including all 4/4 MMGCN/MAGTKD hard cases.
 
+The paper-level SAST architecture and the mapping from these observations to
+method components are recorded in `docs/SAST_METHOD_ABSTRACTION.md`.
+
 The final module choices are therefore linked to observed problems:
 
 - frozen anchor and source losses address source-anchor erosion;

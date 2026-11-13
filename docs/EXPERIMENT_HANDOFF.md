@@ -332,6 +332,10 @@ The final inference contract is one checkpoint. Historical routing, oracle,
 and multi-checkpoint experiments listed below are not the final deployment
 path.
 
+The paper-level architecture, innovation framing, motivation-to-component
+mapping, and abstraction rules are frozen in
+`docs/SAST_METHOD_ABSTRACTION.md`.
+
 ## 9. Reproduction Commands
 
 Check the IEMOCAP layout without writing frames:
