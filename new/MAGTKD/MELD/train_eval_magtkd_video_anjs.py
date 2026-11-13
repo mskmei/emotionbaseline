@@ -142,10 +142,16 @@ def collect_train_labels(path: Path) -> List[int]:
     return labels
 
 
-def make_class_weights(labels: Sequence[int], n_classes: int, device: torch.device) -> torch.Tensor:
+def make_class_weights(
+    labels: Sequence[int],
+    n_classes: int,
+    device: torch.device,
+    power: float = 1.0,
+) -> torch.Tensor:
     counts = np.bincount(np.asarray(labels, dtype=np.int64), minlength=n_classes).astype(np.float32)
     counts = np.maximum(counts, 1.0)
     weights = counts.sum() / (float(n_classes) * counts)
+    weights = np.power(weights, float(power))
     weights = weights / weights.mean()
     return torch.tensor(weights, dtype=torch.float32, device=device)
 
@@ -473,10 +479,14 @@ def train(args) -> None:
     train_loader, valid_loader, source_loader, external_loader = build_loaders(args, train_pkl, external_pkl)
     model = Transformer_Based_Model(args).to(device)
     train_labels = collect_train_labels(train_pkl)
-    class_weights = make_class_weights(train_labels, int(info["n_classes"]), device) if args.class_weight else None
+    class_weights = (
+        make_class_weights(train_labels, int(info["n_classes"]), device, args.class_weight_power)
+        if args.class_weight
+        else None
+    )
     if class_weights is not None:
         print(f"[MAGTKD] class_weights={class_weights.detach().cpu().numpy().round(4).tolist()}")
-    loss_function = nn.CrossEntropyLoss(weight=class_weights)
+    loss_function = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=args.label_smoothing)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.l2)
     total_steps = max(1, len(train_loader) * args.epochs)
     warmup_steps = min(total_steps, args.warmup_steps if args.warmup_steps >= 0 else len(train_loader))
@@ -588,6 +598,8 @@ def train(args) -> None:
         "n_head": args.n_head,
         "temp": args.temp,
         "class_weight": bool(args.class_weight),
+        "class_weight_power": args.class_weight_power,
+        "label_smoothing": args.label_smoothing,
         "max_grad_norm": args.max_grad_norm,
         "selection_split": args.selection_split,
         "selection_metric": args.selection_metric,
@@ -631,6 +643,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--clsNum", type=int, default=4)
     parser.add_argument("--output_head", choices=["auto", "text", "audio", "video"], default="auto")
     parser.add_argument("--class_weight", action="store_true")
+    parser.add_argument("--class_weight_power", type=float, default=1.0)
+    parser.add_argument("--label_smoothing", type=float, default=0.0)
     parser.add_argument("--warmup_steps", type=int, default=-1)
     parser.add_argument("--max_grad_norm", type=float, default=10.0)
     parser.add_argument("--train_text_dropout", type=float, default=0.0)
