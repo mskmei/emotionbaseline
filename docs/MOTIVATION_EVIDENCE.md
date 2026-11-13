@@ -368,3 +368,6 @@ Diagnostic upper bounds and rejected alternatives:
 
 The engineering paths, feature PKLs, checkpoints, and reproduction commands
 are deliberately kept in `docs/EXPERIMENT_HANDOFF.md`.
+
+The separate non-oracle text pilot is documented in
+`docs/NONORACLE_TEXT_PILOT.md`.
